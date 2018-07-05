@@ -202,7 +202,7 @@ class CopyOperand(Instr):
     instr = manager.get_cexp(self.v)
 
     if use_builder:
-      isntr = CVariable('Builder').arr('Insert', [instr])
+      isntr = CVariable('Builder').dot('Insert', [instr])
 
     # TODO: this probably should use manager.get_ctype,
     # but that currently doesn't distinguish source instructions (Value)
@@ -431,7 +431,7 @@ class BinOp(Instr):
       manager.get_cexp(self.v1), manager.get_cexp(self.v2))
 
     if use_builder:
-      cons = CVariable('Builder').arr('Insert', [cons])
+      cons = CVariable('Builder').dot('Insert', [cons])
 
     gen = [CDefinition.init(CPtrType(CTypeName('BinaryOperator')), manager.get_cexp(self), cons)]
 
@@ -588,7 +588,7 @@ class ConversionOp(Instr):
   def visit_target(self, manager, use_builder=False):
     if self.op == ConversionOp.ZExtOrTrunc:
       assert use_builder  #TODO: handle ZExtOrTrunk in root position
-      instr = CVariable('Builder').arr('CreateZExtOrTrunc',
+      instr = CVariable('Builder').dot('CreateZExtOrTrunc',
         [manager.get_cexp(self.v), manager.get_llvm_type(self)])
       return [CDefinition.init(
         manager.PtrValue,
@@ -600,7 +600,7 @@ class ConversionOp(Instr):
         manager.get_cexp(self.v), manager.get_llvm_type(self))
 
       if use_builder:
-        instr = CVariable('Builder').arr('Insert', [instr])
+        instr = CVariable('Builder').dot('Insert', [instr])
 
     return [CDefinition.init(
       manager.PtrInstruction,
@@ -747,7 +747,7 @@ class Icmp(Instr):
       manager.get_cexp(self.v2))
 
     if use_builder:
-      instr = CVariable('Builder').arr('Insert', [instr])
+      instr = CVariable('Builder').dot('Insert', [instr])
 
     return [
       CDefinition.init(manager.PtrInstruction, manager.get_cexp(self), instr)]
@@ -806,7 +806,7 @@ class Select(Instr):
       manager.get_cexp(self.v2))
 
     if use_builder:
-      instr = CVariable('Builder').arr('Insert', [instr])
+      instr = CVariable('Builder').dot('Insert', [instr])
 
     return [CDefinition.init(manager.PtrInstruction, manager.get_cexp(self), instr)]
 

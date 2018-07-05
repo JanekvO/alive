@@ -215,11 +215,11 @@ class LLVMBoolPred(BoolPred):
     isShiftedMask: 'isShiftedMask',
     isSignBit:   'isSignBit',
     maskZero:    'MaskedValueIsZero',
-    NSWAdd:      'WillNotOverflowSignedAdd',
+    NSWAdd:      'willNotOverflowSignedAdd',
     NUWAdd:      'WillNotOverflowUnsignedAdd',
     NSWSub:      'WillNotOverflowSignedSub',
     NUWSub:      'WillNotOverflowUnsignedSub',
-    NSWMul:      'WillNotOverflowSignedMul',
+    NSWMul:      'willNotOverflowSignedMul',
     NUWMul:      'WillNotOverflowUnsignedMul',
     NUWShl:      'WillNotOverflowUnsignedShl',
     OneUse:      'hasOneUse',
@@ -381,12 +381,11 @@ class LLVMBoolPred(BoolPred):
       if isinstance(a, Constant):
         return a.get_APInt(manager).dot('isPowerOf2', [])
 
-      return CFunctionCall('isKnownToBeAPowerOfTwo', manager.get_cexp(a),
-        CVariable('DL'))
+      return CFunctionCall('isKnownToBeAPowerOfTwo', manager.get_cexp(a))
 
     if self.op == LLVMBoolPred.isPower2OrZ:
       return CFunctionCall('isKnownToBeAPowerOfTwo',
-        manager.get_cexp(self.args[0]), CVariable('DL'), CVariable('true'))
+        manager.get_cexp(self.args[0]), CVariable('true'))
 
     if self.op == LLVMBoolPred.NUWAdd:
       return CBinExpr('==',

@@ -319,7 +319,7 @@ Pre: hasOneUse(%s)
 
 
 Name: AddSub:1265
-Pre: hasOneUse(%sx) && WillNotOverflowSignedAdd(%x,trunc(C)) && (C & (-1 << (width(%x) - 1))) == 0
+Pre: hasOneUse(%sx) && willNotOverflowSignedAdd(%x,trunc(C)) && (C & (-1 << (width(%x) - 1))) == 0
 %sx = sext %x
 %c = add %sx, C
   =>
@@ -328,7 +328,7 @@ Pre: hasOneUse(%sx) && WillNotOverflowSignedAdd(%x,trunc(C)) && (C & (-1 << (wid
 
 
 Name: AddSub:1278
-Pre: (hasOneUse(%sx) || hasOneUse(%sy)) && WillNotOverflowSignedAdd(%x,%y)
+Pre: (hasOneUse(%sx) || hasOneUse(%sy)) && willNotOverflowSignedAdd(%x,%y)
 %sx = sext %x
 %sy = sext %y
 %c = add %sx, %sy
@@ -370,7 +370,7 @@ Name: AddSub:1309
 
 
 ; ame: AddSub:1334
-; Pre: WillNotOverflowSignedAdd(%lhs, %rhs)
+; Pre: willNotOverflowSignedAdd(%lhs, %rhs)
 ; %r = add %lhs, %rhs
 ;   =>
 ; %r = add nsw %lhs, %rhs
@@ -2397,7 +2397,7 @@ Name: SimplifyDivRemOfSelect
 
 Name: 735
 ; FIXME: slow
-Pre: WillNotOverflowSignedMul(C1, C2)
+Pre: willNotOverflowSignedMul(C1, C2)
 %Op0 = sdiv %X, C1
 %r = sdiv %Op0, C2
   =>
