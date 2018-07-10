@@ -18,6 +18,7 @@ import argparse, glob, re, sys
 from language import *
 from parser import parse_llvm, parse_opt_file
 from gen import generate_switched_suite
+from topdown import generate_automaton
 
 
 def block_model(s, sneg, m):
@@ -488,6 +489,8 @@ def main():
   parser.add_argument('--no-verify', action='store_false', dest='verify')
   parser.add_argument('-o', '--output', type=argparse.FileType('w'), metavar='file',
     help='Write generated code to <file> ("-" for stdout)')
+  parser.add_argument('-tdo', '--top', type=argparse.FileType('w'), metavar='file',
+    help='Write generated top-down code to <file> ("-" for stdout)')
   parser.add_argument('--use-array-th', action='store_true', default=False,
     help='Use array theory to encode memory operations (default: False)',
     dest='array_th')
@@ -514,15 +517,19 @@ def main():
 
     for opt in opts:
       if not args.match or any(pat in opt[0] for pat in args.match):
-        if args.output:
+        if args.output or args.top:
           gen.append(opt)
         if args.verify:
           check_opt(opt, hide_progress=args.hide_progress)
-        elif not args.output:
+        elif not args.output or args.top:
           print opt[0]
 
   if args.output:
     generate_switched_suite(gen, args.output)
+
+  if args.top:
+    generate_automaton(gen, args.top)
+
 
 if __name__ == "__main__":
   try:
