@@ -5,11 +5,16 @@ from language import *
 from value import *
 from automata import *
 
+from pdb import set_trace
+
 DO_STATS = True
 SIMPLIFY = True
 LIMITER = False
 
 Notequal = u'\u2260'
+#Notequal = 'Sink'
+
+############################# Helper functions ###########################
 
 # There should be another, smarter way of checking whether a value is a 
 # constant
@@ -47,7 +52,7 @@ twoOperands = [
 
 # Retrieves arity of symbol using only the symbol's character string
 def arity(symbol):
-  assert(symbol in twoOperands)
+  assert(symbol in twoOperands or symbol[0] is 'C'), "Arity doesn't support {} yet".format(symbol)
   if symbol in twoOperands:
     return 2
   return 0
@@ -65,15 +70,17 @@ class tree(object):
     assert(isinstance(f, BinOp)), "For now only BinOp are supported"
     return 2
 
-  # TODO: constrain input using asserts or errors
   def subtree(self, path):
     st = self.root
-    for i in path:
-      assert(i is not 0), "Position 0 not possible"
-      if i is 1:
-        st = st.v1
-      elif i is 2:
-        st = st.v2
+    reversedPath = list(path)
+    reversedPath.reverse()
+    if reversedPath is not None:
+      for i in reversedPath:
+        assert(i in range(1, tree.numOperands(st) + 1)), "Position outside range"
+        if i is 1:
+          st = st.v1
+        elif i is 2:
+          st = st.v2
     return st
 
   def dump(self):
@@ -152,14 +159,16 @@ class prefix_tree(object):
   
   # walks through tree to find all wildcards in prefix tree
   def localwildcardPaths(self, node, current_path, paths):
-    # TODO: Enforce once or the other, not both node and node.symbol being None
+    # TODO: Enforce one or the other, not both node and node.symbol being None
     if node is None or node.symbol is None:
       paths.append(current_path)
     else:
       nchildren = node.numOfChildren()
       for i in range(1, nchildren + 1):
+        newCurrentPath = list(current_path)
         c = node.childAt(i)
-        node.localwildcardPaths(c, [i] + current_path, paths)
+        newCurrentPath.append(i)
+        node.localwildcardPaths(c, newCurrentPath, paths)
 
   # Might very well regret this offset later on...
   def childAt(self, index):
@@ -179,7 +188,6 @@ class prefix_tree(object):
       else:
         self.replaceAt2(path[:-1], using)
 
-  # TODO: perhaps make a recursive version instead of this...
   def replaceAt(self, path, using):
     assert(isinstance(using, prefix_tree)), "Using has to be of type prefix_tree"
     if (len(path) is 0):
@@ -250,10 +258,12 @@ class AutomataBuilder(object):
   def localGetNext(self):
     return counter.getNext()
   
-  def symbolsAt(self, path, patterns, isvar = False):
+  @staticmethod
+  def symbolsAt(path, P, isvar = False):
     F = set()
     if not isvar:
-      for p in patterns:
+      for ph in P:
+        p = ph.src_tree
         f = p.subtree(path)
         if isinstance(f, Instr):
           F.add(f.getOpName())
@@ -266,52 +276,88 @@ class AutomataBuilder(object):
   @staticmethod
   def recursiveP(f, P, path):
     newP = []
-    for p in P:
+    for ph in P:
+      p = ph.src_tree
       subp = p.subtree(path)
-      if (isinstance(subp, Instr) and subp.getOpName() is f):
-        newP.append(p)
+      if (isinstance(subp, Instr) and subp.getOpName() is f) or (isConstValue(subp)):
+        newP.append(ph)
     return newP
 
   @staticmethod
-  def variablesAt(P, path):
+  def patternsWithVariablesAt(P, path):
     V = []
-    for p in P:
+    for ph in P:
+      p = ph.src_tree
       subt = p.subtree(path)
       if isWildcard(subt):
-        V.append(subt)
+        V.append(ph)
     return V
+
+  # Applies renaming of states
+  def applyDFARename(self):
+    if len(self.pos) is not 0:
+      # template for format, basically says <unique state id>@<path to be checked>
+      template = "{}@{}"
+      newDFA = DFA()
+      # Rename initial state
+      newDFA.initializeState(template.format(self.automaton.init, self.pos[self.automaton.init]))
+
+      # Rename final states
+      for s in self.automaton.final:
+        newDFA.finalizeState(template.format(s, self.pos[s]))
+
+      # Rename states
+      for s in self.automaton.states:
+        newDFA.addState(template.format(s, self.pos[s]))
+      
+      # Rename transitions
+      for src,edg in self.automaton.graph.items():
+        for sym,dst in edg.items():
+          for d in dst:
+            #print("from {} to {}, using symbol {}".format(src, d, sym))
+            src_str = template.format(src, self.pos[src])
+            dst_str = template.format(d, self.pos[d])
+            newDFA.addTransition(sym, src_str, dst_str)
+
+      # clear lookup table
+      self.pos = {}
+      self.automaton = newDFA
 
   # s : current state
   # e : prefix tree
   # P : list of patterns
-  # TODO: label states properly
-  def createAutomaton(self, s, e, P):
-    M = set(p for p in P if peepholeopt.subsumes(p, e))
+  def createAutomaton(self, s, e, P, sinkState = None):
+    assert(len(P) is not 0), "Can't generate automaton using 0 patterns"
+    M = set(p for p in P if peepholeopt.subsumes(p.src_tree, e))
     #if len(M) != 0 and matches(P,M):
-      # TODO: rephrase acceptance condition...
+    # TODO: rephrase acceptance condition...
     if len(P) is 1:
       self.automaton.finalizeState(s)
+      self.pos[s] = P[0].name
     else:
       path = choosePath(e, P)
-      self.pos[s] = path
+      self.pos[s] = path if len(path) is not 0 else 'empty'
+      V = AutomataBuilder.patternsWithVariablesAt(P, path)
+      if len(V) != 0:
+        sinkState = str(self.localGetNext())
+        self.automaton.addState(str(sinkState))
+        self.automaton.addTransition(Notequal, s, str(sinkState))
+        st = prefix_tree(Notequal, 0)
+        e.replaceAt2(path, st)
+        self.createAutomaton(str(sinkState), e, V, None)
+      elif sinkState is not None and len(V) == 0:
+        self.automaton.addTransition(Notequal, s, str(sinkState))
+
       F =  self.symbolsAt(path, P)
       for f in F:
         freshState = str(self.localGetNext())
         self.automaton.addState(str(freshState))
+        #self.automaton.addTransition("{} = {}".format(self.pos[s], f), s, str(freshState))
         self.automaton.addTransition(f, s, str(freshState))
         st = prefix_tree(f, arity(f))
         recursP = AutomataBuilder.recursiveP(f, P, path)
         e.replaceAt2(path, st)
-        self.createAutomaton(str(freshState), e, recursP)
-      # TODO: also add anchestor variables
-      V = AutomataBuilder.variablesAt(P, path)
-      if len(V) != 0:
-        freshState = str(self.localGetNext())
-        self.automaton.addState(str(freshState))
-        self.automaton.addTransition(Notequal, s, str(freshState))
-        st = prefix_tree(Notequal, 0)
-        e.replaceAt2(path, st)
-        self.createAutomaton(str(freshState), e, V)
+        self.createAutomaton(str(freshState), e, recursP, sinkState)
 
 ######################################################
 
@@ -344,18 +390,16 @@ def generate_automaton(opts, out):
     name, pre, src_bb, tgt_bb, src, tgt, src_used, tgt_used, tgt_skip = opt[1]
     phs.append(peepholeopt(name, pre, src, tgt))
 
-  Patterns = []
-  for ph in phs:
-    Patterns.append(ph.src_tree)
-
   prefix = prefix_tree(None, 0)
   
   AB = AutomataBuilder()
   startState = AB.localGetNext()
-  AB.automaton.addState(startState)
-  AB.automaton.initializeState(startState)
-  AB.createAutomaton(startState, prefix, Patterns)
+  AB.automaton.addState(str(startState))
+  AB.automaton.initializeState(str(startState))
+  AB.createAutomaton(str(startState), prefix, phs)
 
   AB.automaton.dump()
-  AB.automaton.show('automaton')
-  print(AB.pos)
+  AB.automaton.show('PREautomaton')
+  AB.applyDFARename()
+  AB.automaton.dump()
+  AB.automaton.show('POSTautomaton')
