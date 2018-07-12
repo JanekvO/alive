@@ -11,8 +11,8 @@ DO_STATS = True
 SIMPLIFY = True
 LIMITER = False
 
-Notequal = u'\u2260'
-#Notequal = 'Sink'
+#Notequal = u'\u2260'
+Notequal = 'Sink'
 
 ############################# Helper functions ###########################
 
@@ -51,8 +51,10 @@ twoOperands = [
 ]
 
 # Retrieves arity of symbol using only the symbol's character string
+# TODO: clean up functions like this, should properly make tree class(es)
+# to hide functionality like this in
 def arity(symbol):
-  assert(symbol in twoOperands or symbol[0] is 'C'), "Arity doesn't support {} yet".format(symbol)
+  #assert(symbol in twoOperands or symbol[0] is 'C'), "Arity doesn't support {} yet".format(symbol)
   if symbol in twoOperands:
     return 2
   return 0
@@ -72,15 +74,14 @@ class tree(object):
 
   def subtree(self, path):
     st = self.root
-    reversedPath = list(path)
-    reversedPath.reverse()
-    if reversedPath is not None:
-      for i in reversedPath:
-        assert(i in range(1, tree.numOperands(st) + 1)), "Position outside range"
-        if i is 1:
-          st = st.v1
-        elif i is 2:
-          st = st.v2
+    for i in path:
+      if isWildcard(st):
+        return None
+      assert(i in range(1, tree.numOperands(st) + 1)), "Position outside range"
+      if i is 1:
+        st = st.v1
+      elif i is 2:
+        st = st.v2
     return st
 
   def dump(self):
@@ -133,14 +134,12 @@ class peepholeopt(object):
 ######################################################
 
 class counter(object):
-  id = 0
   def __init__(self):
-    pass
+    self.id = 0
   
-  @classmethod
-  def getNext(cls):
-    current = cls.id
-    cls.id = cls.id + 1
+  def getNext(self):
+    current = self.id
+    self.id = self.id + 1
     return current
 
 ######################################################
@@ -188,24 +187,6 @@ class prefix_tree(object):
       else:
         self.replaceAt2(path[:-1], using)
 
-  def replaceAt(self, path, using):
-    assert(isinstance(using, prefix_tree)), "Using has to be of type prefix_tree"
-    if (len(path) is 0):
-      self.symbol = using.symbol
-      self.children = using.children
-    elif (len(path) > 0):
-      pt = self
-      for i in path:
-        assert(i is not 0), "Position 0 not possible"
-        assert(i in range(1,self.numOfChildren() + 1)), "Position outside arity bound"
-        ptPrevious = pt
-        pt = pt.childAt(i)
-      if pt is None:
-        ptPrevious.childAt(path.b)
-      ptPrevious.symbol = using.symbol
-      ptPrevious.children = using.children
-    return self
-
   def addChild(self, child, at):
     assert(isinstance(child, prefix_tree)), "Make sure child is of type prefix_tree"
     assert(at in range(1,self.numOfChildren() + 1)), "Position outside arity bound"
@@ -217,7 +198,8 @@ class prefix_tree(object):
   def dump(self):
     print(str(self.symbol) + "\n{\n")
     for c in self.children:
-      c.dump()
+      if c is not None:
+        c.dump()
     print("\n}\n")
 
 ######################################################
@@ -237,16 +219,6 @@ def matches(P, M):
       return False
   return True
 
-# TODO: heuristic: choose node with least number of differing symbols at that path
-# for all patterns
-# For now, just take the first unknown path 
-def choosePath(prefix, P):
-  paths = prefix.findWildcardPaths()
-  return paths[0]
-  #for p in P:
-  #  for path in paths:
-  #    subt = p.subtree(path)
-
 ######################################################
 
 class Chooser(object):
@@ -257,13 +229,14 @@ class Chooser(object):
 class naiveChoice(Chooser):
   def makeChoice(self, prefix, P):
     paths = prefix.findWildcardPaths()
+    print(paths)
     return paths[0]
 
 # Chooses path with most amount of symbols at path, for all patterns
 class discriminatingChoice(Chooser):
   def makeChoice(self, prefix, P):
     paths = prefix.findWildcardPaths()
-    currentMax = (0, paths[0])
+    currentMax = (0, [])
     for path in paths:
       symbols = AutomataBuilder.symbolsAt(path, P)
       (size, curPath) = currentMax
@@ -272,11 +245,26 @@ class discriminatingChoice(Chooser):
     (size, path) = currentMax
     return path
 
+# Chooses path with least amount of symbols at path, for all patterns
+class minimizedChoice(Chooser):
+  def makeChoice(self, prefix, P):
+    paths = prefix.findWildcardPaths()
+    currentMin = (sys.maxint, [])
+    for path in paths:
+      symbols = AutomataBuilder.symbolsAt(path, P)
+      (size, curPath) = currentMin
+      if size > len(symbols):
+        currentMin = (len(symbols), path)
+    (size, path) = currentMin
+    return path
+
 def createChooser(choice):
   if choice is naiveChoice:
     return naiveChoice()
   elif choice is discriminatingChoice:
     return discriminatingChoice()
+  elif choice is minimizedChoice:
+    return minimizedChoice()
   else:
     raise TypeError('This path chooser does not exist.')
 
@@ -290,7 +278,7 @@ class AutomataBuilder(object):
     self.chooser = createChooser(chooser)
 
   def localGetNext(self):
-    return counter.getNext()
+    return self.count.getNext()
   
   @staticmethod
   def symbolsAt(path, P, isvar = False):
@@ -299,10 +287,11 @@ class AutomataBuilder(object):
       for ph in P:
         p = ph.src_tree
         f = p.subtree(path)
-        if isinstance(f, Instr):
-          F.add(f.getOpName())
-        elif isConstValue(f):
-          F.add(f.getName())
+        if f is not None:
+          if isinstance(f, Instr):
+            F.add(f.getOpName())
+          elif isConstValue(f) or f.isConst():
+            F.add(f.getName())
     return F
 
   # Calculate new P for recursive call, note that the new P is ALWAYS a subset
@@ -313,8 +302,13 @@ class AutomataBuilder(object):
     for ph in P:
       p = ph.src_tree
       subp = p.subtree(path)
-      if (isinstance(subp, Instr) and subp.getOpName() is f) or (isConstValue(subp)):
-        newP.append(ph)
+      # don't like subp return None thing going on, but how else to denote that
+      # no path exists for p?
+      if subp is not None:
+        if (isinstance(subp, Instr) and subp.getOpName() is f) or \
+          (isConstValue(subp)) or \
+          (isinstance(subp, Constant) and subp.isConst()):
+          newP.append(ph)
     return newP
 
   @staticmethod
@@ -323,7 +317,7 @@ class AutomataBuilder(object):
     for ph in P:
       p = ph.src_tree
       subt = p.subtree(path)
-      if isWildcard(subt):
+      if subt is not None and isWildcard(subt):
         V.append(ph)
     return V
 
@@ -362,6 +356,7 @@ class AutomataBuilder(object):
   # P : list of patterns
   def createAutomaton(self, s, e, P, sinkState = None):
     assert(len(P) is not 0), "Can't generate automaton using 0 patterns"
+    print("s:{}\te:{}\tP:{}".format(s, e.symbol, P))
     M = set(p for p in P if peepholeopt.subsumes(p.src_tree, e))
     #if len(M) != 0 and matches(P,M):
     # TODO: rephrase acceptance condition...
@@ -424,16 +419,38 @@ def generate_automaton(opts, out):
     name, pre, src_bb, tgt_bb, src, tgt, src_used, tgt_used, tgt_skip = opt[1]
     phs.append(peepholeopt(name, pre, src, tgt))
 
-  prefix = prefix_tree(None, 0)
+  prefixDc = prefix_tree(None, 0)
+  prefixNc = prefix_tree(None, 0)
+  prefixMc = prefix_tree(None, 0)
   
-  AB = AutomataBuilder(discriminatingChoice)
-  startState = AB.localGetNext()
-  AB.automaton.addState(str(startState))
-  AB.automaton.initializeState(str(startState))
-  AB.createAutomaton(str(startState), prefix, phs)
+  ABdc = AutomataBuilder(discriminatingChoice)
+  ABnc = AutomataBuilder(naiveChoice)
+  ABmc = AutomataBuilder(minimizedChoice)
 
-  AB.automaton.dump()
-  AB.automaton.show('PREautomaton')
-  AB.applyDFARename()
-  AB.automaton.dump()
-  AB.automaton.show('POSTautomaton')
+  startStateDc = ABdc.localGetNext()
+  startStateNc = ABnc.localGetNext()
+  startStateMc = ABmc.localGetNext()
+
+  ABdc.automaton.addState(str(startStateDc))
+  ABdc.automaton.initializeState(str(startStateDc))
+  ABdc.createAutomaton(str(startStateDc), prefixDc, phs)
+
+  ABnc.automaton.addState(str(startStateNc))
+  ABnc.automaton.initializeState(str(startStateNc))
+  ABnc.createAutomaton(str(startStateNc), prefixNc, phs)
+
+  ABmc.automaton.addState(str(startStateMc))
+  ABmc.automaton.initializeState(str(startStateMc))
+  ABmc.createAutomaton(str(startStateMc), prefixMc, phs)
+
+  ABdc.applyDFARename()
+  ABdc.automaton.dump()
+  ABdc.automaton.show('automaton_discriminating')
+
+  ABnc.applyDFARename()
+  ABnc.automaton.dump()
+  ABnc.automaton.show('automaton_naive')
+
+  ABmc.applyDFARename()
+  ABmc.automaton.dump()
+  ABmc.automaton.show('automaton_minimizing')
