@@ -249,11 +249,45 @@ def choosePath(prefix, P):
 
 ######################################################
 
+class Chooser(object):
+  def makeChoice(self, prefix, P):
+    pass
+
+# Chooses first available path (usually boils down to left-to-right)
+class naiveChoice(Chooser):
+  def makeChoice(self, prefix, P):
+    paths = prefix.findWildcardPaths()
+    return paths[0]
+
+# Chooses path with most amount of symbols at path, for all patterns
+class discriminatingChoice(Chooser):
+  def makeChoice(self, prefix, P):
+    paths = prefix.findWildcardPaths()
+    currentMax = (0, paths[0])
+    for path in paths:
+      symbols = AutomataBuilder.symbolsAt(path, P)
+      (size, curPath) = currentMax
+      if size < len(symbols):
+        currentMax = (len(symbols), path)
+    (size, path) = currentMax
+    return path
+
+def createChooser(choice):
+  if choice is naiveChoice:
+    return naiveChoice()
+  elif choice is discriminatingChoice:
+    return discriminatingChoice()
+  else:
+    raise TypeError('This path chooser does not exist.')
+
+######################################################
+
 class AutomataBuilder(object):
-  def __init__(self):
+  def __init__(self, chooser):
     self.pos = {}
     self.automaton = DFA()
     self.count = counter()
+    self.chooser = createChooser(chooser)
 
   def localGetNext(self):
     return counter.getNext()
@@ -335,7 +369,7 @@ class AutomataBuilder(object):
       self.automaton.finalizeState(s)
       self.pos[s] = P[0].name
     else:
-      path = choosePath(e, P)
+      path = self.chooser.makeChoice(e, P)
       self.pos[s] = path if len(path) is not 0 else 'empty'
       V = AutomataBuilder.patternsWithVariablesAt(P, path)
       if len(V) != 0:
@@ -392,7 +426,7 @@ def generate_automaton(opts, out):
 
   prefix = prefix_tree(None, 0)
   
-  AB = AutomataBuilder()
+  AB = AutomataBuilder(discriminatingChoice)
   startState = AB.localGetNext()
   AB.automaton.addState(str(startState))
   AB.automaton.initializeState(str(startState))
