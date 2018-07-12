@@ -1,5 +1,6 @@
 
 import argparse, glob, re, sys
+from enum import Enum
 from itertools import izip,count
 from language import *
 from value import *
@@ -61,6 +62,101 @@ def arity(symbol):
 
 ######################################################
 
+# FIXME: Replace these enums with classes considering python 2.7 doesn't
+# support enums unless installing the backported version
+class NodeType(Enum):
+  ConstVal = 1,
+  ConstWildcard = 2,
+  Wildcard = 3,
+  Operation = 4
+
+class TreeNode(object):
+  def __init__(self, symbol, numOfChildren):
+    self.symbol = symbol
+    self.children = []
+    for i in range(numOfChildren):
+      self.children.append(numOfChildren)
+  
+  def nodeType(self):
+    pass
+  
+  def numOfChildren(self):
+    return len(self.children)
+  
+  # p1 subsumes p2 if p2 is an instance of p1
+  @staticmethod
+  def subsumption(p1, p2):
+    # if p1 is a wildcard, then always true
+    if p1.nodeType() is NodeType.Wildcard:
+      return True
+    # if p1 is a constant wildcard (e.g. C, C1, C2, ...), then only true if
+    # p2 is either a constant wildcard or constant value (e.g. -1, 1, 2, 3, ...)
+    elif p1.nodeType() is NodeType.ConstWildcard and \
+        (p2.nodeType() is NodeType.ConstWildcard or p2.nodeType() is NodeType.ConstVal):
+      return True
+    # true if p1 and p2 are (the same) constant values
+    elif p1.nodeType() is NodeType.ConstVal and p2.nodeType() is NodeType.ConstVal and \
+          p1.symbol is p2.symbol:
+      return True
+    # if both are operations and their symbols match, recurs on their children.
+    # if all children of p1 subsume children of p2, return true
+    elif p1.nodeType() is NodeType.Operation and p2.nodeType() is NodeType.Operation and \
+          p1.symbol is p2.symbol:
+          p1OperandNum = p1.numOfChildren()
+          p2OperandNum = p2.numOfChildren()
+          assert(p1OperandNum is p2OperandNum), "Operation with multiple possible arities is not possible"
+          for i in range(1, p1OperandNum + 1):
+            if TreeNode.subsumes(p1.childAt(i), p2.childAt(i)) is False:
+              return False
+          return True
+    # catch all, return false
+    else:
+      return False
+  
+  # self subsumes p if p is an instance of self
+  def subsumes(self, p):
+    return TreeNode.subsumption(self, p)
+  
+  def subtreeExists(self, path):
+    return (self.subtree(path) is not None)
+
+  def subtree(self, path):
+    curTree = self
+    for i in path:
+      if curTree is None:
+        return None
+      curTree = self.childAt(i)
+    return curTree
+  
+  def replaceAt(self, path, using):
+    if (len(path) is 0):
+      self.symbol = using.symbol
+      self.children = using.children
+    elif (len(path) is 1):
+      i = path[0]
+      self.addChild(using, i)
+    else:
+      self.replaceAt(path[:-1], using)
+
+  def addChild(self, child, at):
+    self.children[at - 1] = child
+
+  def childAt(self, index):
+    return self.children[index - 1]
+  
+  def dump(self):
+    self.localprint("", True)
+  
+  def localprint(self, prefix, isLastChild):
+    infix = "L-- " if isLastChild is True else "|-- "
+    print(prefix + infix + self.symbol)
+    for i in range(self.numOfChildren(), 1, -1):
+      suffix = "    " if isLastChild is True else "|   "
+      self.childAt(i).localprint(prefix + suffix, False)
+    if self.numOfChildren() > 0:
+      finalInfix = "    " if isLastChild is True else "|   "
+      self.childAt(1).localprint(prefix + finalInfix, True)
+    
 class tree(object):
   def __init__(self, insts):
     self.inputs = set((k,v) for k,v in insts.iteritems() if isinstance(v,Input))
@@ -229,7 +325,6 @@ class Chooser(object):
 class naiveChoice(Chooser):
   def makeChoice(self, prefix, P):
     paths = prefix.findWildcardPaths()
-    print(paths)
     return paths[0]
 
 # Chooses path with most amount of symbols at path, for all patterns
