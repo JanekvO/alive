@@ -13,7 +13,7 @@ SIMPLIFY = True
 LIMITER = False
 
 #Notequal = u'\u2260'
-Notequal = 'Sink'
+Notequal = '%Sink'
 
 ############################# Helper functions ###########################
 
@@ -144,13 +144,19 @@ class TreeNode(object):
   
   def localprint(self, prefix, isLastChild):
     infix = "L-- " if isLastChild is True else "|-- "
-    print(prefix + infix + self.symbol)
+    print(str(prefix) + infix + str(self.symbol))
     for i in range(self.numOfChildren(), 1, -1):
       suffix = "    " if isLastChild is True else "|   "
-      self.childAt(i).localprint(prefix + suffix, False)
+      if self.childAt(i) is not None:
+        self.childAt(i).localprint(str(prefix) + suffix, False)
+      else:
+        print(prefix + suffix + '--- ' + "None")
     if self.numOfChildren() > 0:
       finalInfix = "    " if isLastChild is True else "|   "
-      self.childAt(1).localprint(prefix + finalInfix, True)
+      if self.childAt(1) is not None:
+        self.childAt(1).localprint(str(prefix) + finalInfix, True)
+      else:
+        print(prefix + finalInfix + '--- ' + "None")
 
 class ExpressionTree(TreeNode):
   def __init__(self, instr):
@@ -259,17 +265,6 @@ class counter(object):
 def priority(pat):
   return 1
 
-# TODO: Redo
-def matches(P, M):
-  for p in P:
-    found = False
-    for m in M:
-      if priority(m) >= priority(p):
-        found = True
-    if found is False:
-      return False
-  return True
-
 ######################################################
 
 class Chooser(object):
@@ -372,6 +367,20 @@ class AutomataBuilder(object):
         V.append(ph)
     return V
 
+  @staticmethod
+  def exists(p, M):
+    for m in M:
+      if priority(m) >= priority(p):
+        return True
+    return False
+
+  @staticmethod
+  def acceptancCondition(P, M):
+    for p in P:
+      if not AutomataBuilder.exists(p, M):
+        return False
+    return True
+
   # Applies renaming of states
   def applyDFARename(self):
     if len(self.pos) is not 0:
@@ -409,11 +418,9 @@ class AutomataBuilder(object):
     assert(len(P) is not 0), "Can't generate automaton using 0 patterns"
     print("s:{}\te:{}\tP:{}".format(s, e.symbol, P))
     M = set(p for p in P if p.src_tree.subsumes(e))
-    #if len(M) != 0 and matches(P,M):
-    # TODO: rephrase acceptance condition...
-    if len(P) is 1:
+    if len(M) is not 0 and AutomataBuilder.acceptancCondition(P, M) and len(P) is 1:
       self.automaton.finalizeState(s)
-      self.pos[s] = P[0].name
+      self.pos[s] = M.pop().name
     else:
       path = self.chooser.makeChoice(e, P)
       self.pos[s] = path if len(path) is not 0 else 'empty'
