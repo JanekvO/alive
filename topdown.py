@@ -123,9 +123,9 @@ class TreeNode(object):
   def subtree(self, path):
     curTree = self
     for i in path:
-      if curTree is None:
+      if curTree is None or len(curTree.children) is 0:
         return None
-      curTree = self.childAt(i)
+      curTree = curTree.childAt(i)
     return curTree
   
   def replaceAt(self, path, using):
@@ -136,7 +136,7 @@ class TreeNode(object):
       i = path[0]
       self.addChild(using, i)
     else:
-      self.replaceAt(path[:-1], using)
+      self.childAt(path[0]).replaceAt(path[1:], using)
 
   def addChild(self, child, at):
     self.children[at - 1] = child
@@ -156,7 +156,7 @@ class TreeNode(object):
     if self.numOfChildren() > 0:
       finalInfix = "    " if isLastChild is True else "|   "
       self.childAt(1).localprint(prefix + finalInfix, True)
-    
+
 class tree(object):
   def __init__(self, insts):
     self.inputs = set((k,v) for k,v in insts.iteritems() if isinstance(v,Input))
