@@ -17,17 +17,6 @@ Notequal = 'Sink'
 
 ############################# Helper functions ###########################
 
-# There should be another, smarter way of checking whether a value is a 
-# constant
-def isConstValue(val):
-  return (val.getName()[0] == 'C')
-
-#  /\
-# /__\
-#  ||  Same as above
-def isWildcard(val):
-  return (not isinstance(val, Instr) and val.getName()[0] == '%')
-
 def local_get_root(src):
   values = src.values()
   root = values.pop()
@@ -65,9 +54,9 @@ def arity(symbol):
 # FIXME: Replace these enums with classes considering python 2.7 doesn't
 # support enums unless installing the backported version
 class NodeType(Enum):
-  ConstVal = 1,
-  ConstWildcard = 2,
-  Wildcard = 3,
+  ConstVal = 1
+  ConstWildcard = 2
+  Wildcard = 3
   Operation = 4
 
 class TreeNode(object):
@@ -75,7 +64,7 @@ class TreeNode(object):
     self.symbol = symbol
     self.children = []
     for i in range(numOfChildren):
-      self.children.append(numOfChildren)
+      self.children.append(None)
   
   def nodeType(self):
     pass
@@ -89,6 +78,10 @@ class TreeNode(object):
     # if p1 is a wildcard, then always true
     if p1.nodeType() is NodeType.Wildcard:
       return True
+    # at this point p1 is known to not be a wildcard, p2 being none denotes a 
+    # wildcard to be filled in therefore we know it's not subsumed
+    elif p2 is None or p2.symbol is None:
+      return False
     # if p1 is a constant wildcard (e.g. C, C1, C2, ...), then only true if
     # p2 is either a constant wildcard or constant value (e.g. -1, 1, 2, 3, ...)
     elif p1.nodeType() is NodeType.ConstWildcard and \
@@ -115,6 +108,8 @@ class TreeNode(object):
   
   # self subsumes p if p is an instance of self
   def subsumes(self, p):
+    #self.dump()
+    #p.dump()
     return TreeNode.subsumption(self, p)
   
   def subtreeExists(self, path):
@@ -191,6 +186,10 @@ class ExpressionTree(TreeNode):
         ret = NodeType.Wildcard
     elif self.expr.isConst():
       ret = NodeType.ConstVal
+    elif isinstance(self.expr, CnstBinaryOp):
+      pass
+    elif isinstance(self.expr, CnstUnaryOp):
+      pass
     if ret is None:
       raise Exception('ExpressionTree\'s type unknown or not implemented yet')
     return ret
@@ -229,38 +228,6 @@ class PrefixTree(TreeNode):
         newCurrentPath.append(i)
         node.localwildcardPaths(c, newCurrentPath, paths)
 
-class tree(object):
-  def __init__(self, insts):
-    self.inputs = set((k,v) for k,v in insts.iteritems() if isinstance(v,Input))
-    self.root = local_get_root(insts)
-
-  # TODO: support more than just binary operations
-  @staticmethod
-  def numOperands(f):
-    assert(isinstance(f, BinOp)), "For now only BinOp are supported"
-    return 2
-
-  def subtree(self, path):
-    st = self.root
-    for i in path:
-      if isWildcard(st):
-        return None
-      assert(i in range(1, tree.numOperands(st) + 1)), "Position outside range"
-      if i is 1:
-        st = st.v1
-      elif i is 2:
-        st = st.v2
-    return st
-
-  def dump(self):
-    if (self.root is not None):
-      print(str(self.root.getName()) + "\n{")
-      if (self.root.v1):
-        print(self.root.v1.getName())
-      if (self.root.v2):
-        print(self.root.v2.getName())
-      print("}\n")
-
 ######################################################
 
 class peepholeopt(object):
@@ -270,34 +237,10 @@ class peepholeopt(object):
     self.source = source
     self.target = target
 
-    self.src_tree = tree(source)
-    self.tgt_tree = tree(target)
-
-  # p1 subsumes p2 if p2 is an instance of p1
-  @staticmethod
-  def subsumes(p1, p2):
-    if isinstance(p1, Instr):
-      if isinstance(p2, Instr):
-        if p1.v1 is not None and p2.v1 is not None:
-          left_child = peepholeopt.subsumes(p1.v1, p2.v1)
-          if (left_child is False):
-            return False
-
-        if p1.v2 is not None and p2.v2 is not None:
-          right_child = peepholeopt.subsumes(p1.v2, p2.v2)
-          if (right_child is False):
-            return False
-        return (p1.getOpName() == p2.getOpName())
-      else:
-        return False
-    elif isinstance(p1, Value):
-      # p1 is a value but not a constant => Wildcard, or
-      if (not isConstValue(p1)) or (isinstance(p2, Value) and isConstValue(p2)):
-        return True
-      else:
-        return False
-    else:
-      return False
+    self.src_tree = ExpressionTree(local_get_root(source))
+    # Not necessary to put target in a ExpressionTree as we don't do any
+    # matching on it.
+    self.tgt_root = local_get_root(target)
 
 ######################################################
 
@@ -309,66 +252,6 @@ class counter(object):
     current = self.id
     self.id = self.id + 1
     return current
-
-######################################################
-
-class prefix_tree(object):
-  def __init__(self, symbol, numOfChildren):
-    self.symbol = symbol
-    self.children = []
-    for i in range(0, numOfChildren):
-      self.children.append(None)
-  
-  def findWildcardPaths(self):
-    paths = []
-    self.localwildcardPaths(self, [], paths)
-    return paths
-  
-  # walks through tree to find all wildcards in prefix tree
-  def localwildcardPaths(self, node, current_path, paths):
-    # TODO: Enforce one or the other, not both node and node.symbol being None
-    if node is None or node.symbol is None:
-      paths.append(current_path)
-    else:
-      nchildren = node.numOfChildren()
-      for i in range(1, nchildren + 1):
-        newCurrentPath = list(current_path)
-        c = node.childAt(i)
-        newCurrentPath.append(i)
-        node.localwildcardPaths(c, newCurrentPath, paths)
-
-  # Might very well regret this offset later on...
-  def childAt(self, index):
-    return self.children[index-1]
-
-  def replaceAt2(self, path, using):
-    assert(isinstance(using, prefix_tree)), "Using has to be of type prefix_tree"
-    if (len(path) is 0):
-      self.symbol = using.symbol
-      self.children = using.children
-    else:
-      assert(path[-1] in range(1, self.numOfChildren() + 1)), "Position outside arity bound"
-      if (len(path) is 1):
-        # make sure the last node isn't a None
-        i = path[0]
-        self.addChild(using, i)
-      else:
-        self.replaceAt2(path[:-1], using)
-
-  def addChild(self, child, at):
-    assert(isinstance(child, prefix_tree)), "Make sure child is of type prefix_tree"
-    assert(at in range(1,self.numOfChildren() + 1)), "Position outside arity bound"
-    self.children[at-1] = child
-
-  def numOfChildren(self):
-    return len(self.children)
-  
-  def dump(self):
-    print(str(self.symbol) + "\n{\n")
-    for c in self.children:
-      if c is not None:
-        c.dump()
-    print("\n}\n")
 
 ######################################################
 
@@ -455,10 +338,10 @@ class AutomataBuilder(object):
         p = ph.src_tree
         f = p.subtree(path)
         if f is not None:
-          if isinstance(f, Instr):
-            F.add(f.getOpName())
-          elif isConstValue(f) or f.isConst():
-            F.add(f.getName())
+          if f.nodeType() is NodeType.Operation:
+            F.add(f.symbol)
+          elif f.nodeType() is NodeType.ConstVal or f.nodeType() is NodeType.ConstWildcard:
+            F.add(f.symbol)
     return F
 
   # Calculate new P for recursive call, note that the new P is ALWAYS a subset
@@ -472,9 +355,10 @@ class AutomataBuilder(object):
       # don't like subp return None thing going on, but how else to denote that
       # no path exists for p?
       if subp is not None:
-        if (isinstance(subp, Instr) and subp.getOpName() is f) or \
-          (isConstValue(subp)) or \
-          (isinstance(subp, Constant) and subp.isConst()):
+        nt = subp.nodeType()
+        if (nt is NodeType.Operation and subp.symbol is f) or \
+            (nt is NodeType.ConstWildcard) or \
+            (nt is NodeType.ConstVal):
           newP.append(ph)
     return newP
 
@@ -484,7 +368,7 @@ class AutomataBuilder(object):
     for ph in P:
       p = ph.src_tree
       subt = p.subtree(path)
-      if subt is not None and isWildcard(subt):
+      if subt is not None and subt.nodeType() is NodeType.Wildcard:
         V.append(ph)
     return V
 
@@ -524,7 +408,7 @@ class AutomataBuilder(object):
   def createAutomaton(self, s, e, P, sinkState = None):
     assert(len(P) is not 0), "Can't generate automaton using 0 patterns"
     print("s:{}\te:{}\tP:{}".format(s, e.symbol, P))
-    M = set(p for p in P if peepholeopt.subsumes(p.src_tree, e))
+    M = set(p for p in P if p.src_tree.subsumes(e))
     #if len(M) != 0 and matches(P,M):
     # TODO: rephrase acceptance condition...
     if len(P) is 1:
@@ -538,8 +422,8 @@ class AutomataBuilder(object):
         sinkState = str(self.localGetNext())
         self.automaton.addState(str(sinkState))
         self.automaton.addTransition(Notequal, s, str(sinkState))
-        st = prefix_tree(Notequal, 0)
-        e.replaceAt2(path, st)
+        st = PrefixTree(Notequal, 0)
+        e.replaceAt(path, st)
         self.createAutomaton(str(sinkState), e, V, None)
       elif sinkState is not None and len(V) == 0:
         self.automaton.addTransition(Notequal, s, str(sinkState))
@@ -548,11 +432,10 @@ class AutomataBuilder(object):
       for f in F:
         freshState = str(self.localGetNext())
         self.automaton.addState(str(freshState))
-        #self.automaton.addTransition("{} = {}".format(self.pos[s], f), s, str(freshState))
         self.automaton.addTransition(f, s, str(freshState))
-        st = prefix_tree(f, arity(f))
+        st = PrefixTree(f, arity(f))
         recursP = AutomataBuilder.recursiveP(f, P, path)
-        e.replaceAt2(path, st)
+        e.replaceAt(path, st)
         self.createAutomaton(str(freshState), e, recursP, sinkState)
 
 ######################################################
@@ -586,9 +469,9 @@ def generate_automaton(opts, out):
     name, pre, src_bb, tgt_bb, src, tgt, src_used, tgt_used, tgt_skip = opt[1]
     phs.append(peepholeopt(name, pre, src, tgt))
 
-  prefixDc = prefix_tree(None, 0)
-  prefixNc = prefix_tree(None, 0)
-  prefixMc = prefix_tree(None, 0)
+  prefixDc = PrefixTree(None, 0)
+  prefixNc = PrefixTree(None, 0)
+  prefixMc = PrefixTree(None, 0)
   
   ABdc = AutomataBuilder(discriminatingChoice)
   ABnc = AutomataBuilder(naiveChoice)
