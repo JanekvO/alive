@@ -157,6 +157,78 @@ class TreeNode(object):
       finalInfix = "    " if isLastChild is True else "|   "
       self.childAt(1).localprint(prefix + finalInfix, True)
 
+class ExpressionTree(TreeNode):
+  def __init__(self, instr):
+    self.expr = instr
+    self.children = []
+    self.populate()
+  
+  def populate(self):
+    nt = self.nodeType()
+    if nt is NodeType.Operation:
+      self.symbol = self.expr.getOpName()
+
+      # TODO: Replace this with something a bit more generic, since only binary
+      # operations are supported for now (and we know how the BinOp class
+      # looks like) we can get away with this hard coded part
+      self.children.append(ExpressionTree(self.expr.v1))
+      self.children.append(ExpressionTree(self.expr.v2))
+
+    elif nt is NodeType.Wildcard or nt is NodeType.ConstWildcard:
+      self.symbol = self.expr.getName()
+    elif nt is NodeType.ConstVal:
+      # TODO: Don't like refering to class variables directly but I really need the value
+      self.symbol = str(self.expr.val)
+    
+  def nodeType(self):
+    ret = None
+    if isinstance(self.expr, Instr):
+      ret = NodeType.Operation
+    elif isinstance(self.expr, Input):
+      if self.expr.getName()[0] is 'C':
+        ret = NodeType.ConstWildcard
+      elif self.expr.getName()[0] is '%':
+        ret = NodeType.Wildcard
+    elif self.expr.isConst():
+      ret = NodeType.ConstVal
+    if ret is None:
+      raise Exception('ExpressionTree\'s type unknown or not implemented yet')
+    return ret
+
+class PrefixTree(TreeNode):
+  def __init__(self, symbol, numOfChildren):
+    super(PrefixTree, self).__init__(symbol, numOfChildren)
+  
+  def nodeType(self):
+    ret = None
+    if len(self.children) > 0:
+      ret = NodeType.Operation
+    elif self.symbol[0] is 'C':
+      ret = NodeType.ConstWildcard
+    elif self.symbol[0] is '%':
+      ret = NodeType.Wildcard
+    else:
+      ret = NodeType.ConstVal
+    return ret
+
+  def findWildcardPaths(self):
+    paths = []
+    self.localwildcardPaths(self, [], paths)
+    return paths
+  
+  # walks through tree to find all wildcards in prefix tree
+  def localwildcardPaths(self, node, current_path, paths):
+    # TODO: Enforce one or the other, not both node and node.symbol being None
+    if node is None or node.symbol is None:
+      paths.append(current_path)
+    else:
+      nchildren = node.numOfChildren()
+      for i in range(1, nchildren + 1):
+        newCurrentPath = list(current_path)
+        c = node.childAt(i)
+        newCurrentPath.append(i)
+        node.localwildcardPaths(c, newCurrentPath, paths)
+
 class tree(object):
   def __init__(self, insts):
     self.inputs = set((k,v) for k,v in insts.iteritems() if isinstance(v,Input))
