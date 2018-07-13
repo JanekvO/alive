@@ -13,7 +13,9 @@ SIMPLIFY = True
 LIMITER = False
 
 #Notequal = u'\u2260'
-Notequal = '%Sink'
+Notequal = 'Sink'
+ConstWC = 'C*'
+WC = '%*'
 
 ############################# Helper functions ###########################
 
@@ -281,7 +283,12 @@ class naiveChoice(Chooser):
 class discriminatingChoice(Chooser):
   def makeChoice(self, prefix, P):
     paths = prefix.findWildcardPaths()
-    currentMax = (0, [])
+
+    if len(paths) > 0:
+      currentMax = (0, paths[0])
+    else:
+      currentMax = (0, [])
+
     for path in paths:
       symbols = AutomataBuilder.symbolsAt(path, P)
       (size, curPath) = currentMax
@@ -294,7 +301,12 @@ class discriminatingChoice(Chooser):
 class minimizedChoice(Chooser):
   def makeChoice(self, prefix, P):
     paths = prefix.findWildcardPaths()
-    currentMin = (sys.maxint, [])
+
+    if len(paths) > 0:
+      currentMin = (sys.maxint, paths[0])
+    else:
+      currentMin = (sys.maxint, [])
+
     for path in paths:
       symbols = AutomataBuilder.symbolsAt(path, P)
       (size, curPath) = currentMin
@@ -335,7 +347,7 @@ class AutomataBuilder(object):
         if f is not None:
           if f.nodeType() is NodeType.Operation:
             F.add(f.symbol)
-          elif f.nodeType() is NodeType.ConstVal or f.nodeType() is NodeType.ConstWildcard:
+          elif f.nodeType() is NodeType.ConstVal:
             F.add(f.symbol)
     return F
 
@@ -352,10 +364,30 @@ class AutomataBuilder(object):
       if subp is not None:
         nt = subp.nodeType()
         if (nt is NodeType.Operation and subp.symbol is f) or \
-            (nt is NodeType.ConstWildcard) or \
             (nt is NodeType.ConstVal):
+            #(nt is NodeType.ConstWildcard) or \
           newP.append(ph)
     return newP
+
+  @staticmethod
+  def patternsWithWCAt(P, path):
+    V = []
+    for ph in P:
+      p = ph.src_tree
+      subt = p.subtree(path)
+      if subt is not None and subt.nodeType() is NodeType.Wildcard:
+        V.append(ph)
+    return V
+
+  @staticmethod
+  def patternsWithConstWCAt(P, path):
+    V = []
+    for ph in P:
+      p = ph.src_tree
+      subt = p.subtree(path)
+      if subt is not None and subt.nodeType() is NodeType.ConstWildcard:
+        V.append(ph)
+    return V
 
   @staticmethod
   def patternsWithVariablesAt(P, path):
@@ -363,7 +395,8 @@ class AutomataBuilder(object):
     for ph in P:
       p = ph.src_tree
       subt = p.subtree(path)
-      if subt is not None and subt.nodeType() is NodeType.Wildcard:
+      if subt is not None and (subt.nodeType() is NodeType.Wildcard or \
+          subt.nodeType() is NodeType.ConstWildcard):
         V.append(ph)
     return V
 
@@ -410,6 +443,40 @@ class AutomataBuilder(object):
       # clear lookup table
       self.pos = {}
       self.automaton = newDFA
+  
+  # Used to make any sink states more specific to either ConstWildcard or regular
+  # Wildcard. This diverges from literature as regular literature assumes a single
+  # form of wildcard, whereas in our case the subsumption is as follows:
+  # wildcards > ConstWildcards > Constants 
+  def constrainSink(self, s, e, V, path):
+    nodeTypes = set()
+    for p in V:
+      subtree = p.src_tree.subtree(path)
+      nodeTypes.add(subtree.nodeType())
+
+    assert(NodeType.ConstWildcard in nodeTypes or \
+            NodeType.Wildcard in nodeTypes), 'No (constant) wildcard in sink state, why does this state exist?'
+    self.pos[s] = path if len(path) is not 0 else 'empty'
+
+    PWithConstWC = AutomataBuilder.patternsWithConstWCAt(V, path)
+    PWithNotConstWC = AutomataBuilder.patternsWithWCAt(V, path)
+
+    sinkState = None
+    if NodeType.Wildcard in nodeTypes:
+      WCState = str(self.localGetNext())
+      self.automaton.addState(WCState)
+      self.automaton.addTransition(WC, s, WCState)
+      sinkState = WCState
+      st = PrefixTree(WC, 0)
+      e.replaceAt(path, st)
+      self.createAutomaton(WCState, e, PWithNotConstWC, None)
+    if NodeType.ConstWildcard in nodeTypes:
+      ConstWCState = str(self.localGetNext())
+      self.automaton.addState(ConstWCState)
+      self.automaton.addTransition(ConstWC, s, ConstWCState)
+      st = PrefixTree(ConstWC, 0)
+      e.replaceAt(path, st)
+      self.createAutomaton(ConstWCState, e, PWithConstWC, sinkState)
 
   # s : current state
   # e : prefix tree
@@ -417,7 +484,13 @@ class AutomataBuilder(object):
   def createAutomaton(self, s, e, P, sinkState = None):
     assert(len(P) is not 0), "Can't generate automaton using 0 patterns"
     print("s:{}\te:{}\tP:{}".format(s, e.symbol, P))
+    #set_trace()
+    print('######')
+    e.dump()
+    print('######')
     M = set(p for p in P if p.src_tree.subsumes(e))
+    # TODO: depend on actual priority instead of len(P) as this might result in 
+    # infinite recursion if multiple patterns in P unify
     if len(M) is not 0 and AutomataBuilder.acceptancCondition(P, M) and len(P) is 1:
       self.automaton.finalizeState(s)
       self.pos[s] = M.pop().name
@@ -425,17 +498,18 @@ class AutomataBuilder(object):
       path = self.chooser.makeChoice(e, P)
       self.pos[s] = path if len(path) is not 0 else 'empty'
       V = AutomataBuilder.patternsWithVariablesAt(P, path)
+      F =  self.symbolsAt(path, P)
       if len(V) != 0:
         sinkState = str(self.localGetNext())
         self.automaton.addState(str(sinkState))
         self.automaton.addTransition(Notequal, s, str(sinkState))
         st = PrefixTree(Notequal, 0)
         e.replaceAt(path, st)
-        self.createAutomaton(str(sinkState), e, V, None)
+        self.constrainSink(sinkState, e, V, path)
+        #self.createAutomaton(str(sinkState), e, V, None)
       elif sinkState is not None and len(V) == 0:
         self.automaton.addTransition(Notequal, s, str(sinkState))
 
-      F =  self.symbolsAt(path, P)
       for f in F:
         freshState = str(self.localGetNext())
         self.automaton.addState(str(freshState))
