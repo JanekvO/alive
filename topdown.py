@@ -451,7 +451,12 @@ class AutomataBuilder(object):
     M = set(p for p in P if p.src_tree.subsumes(e))
     if len(M) is not 0 and self.acceptancCondition(P, M):
       self.automaton.finalizeState(s)
-      self.pos[s] = M.pop().name
+      m = M.pop()
+      while (len(M) > 0):
+        n = M.pop()
+        if self.priority(n) > self.priority(m):
+          m = n
+      self.pos[s] = m.name
     else:
       path = self.chooser.makeChoice(e, P)
       self.pos[s] = path if len(path) is not 0 else 'empty'
