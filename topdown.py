@@ -26,31 +26,6 @@ def local_get_root(src):
     root = values.pop()
   return root
 
-twoOperands = [
-    'add',
-    'sub',
-    'mul',
-    'udiv',
-    'sdiv',
-    'urem',
-    'srem',
-    'shl',
-    'ashr',
-    'lshr',
-    'and',
-    'or',
-    'xor',
-]
-
-# Retrieves arity of symbol using only the symbol's character string
-# TODO: clean up functions like this, should properly make tree class(es)
-# to hide functionality like this in
-def arity(symbol):
-  #assert(symbol in twoOperands or symbol[0] is 'C'), "Arity doesn't support {} yet".format(symbol)
-  if symbol in twoOperands:
-    return 2
-  return 0
-
 ######################################################
 
 # FIXME: Replace these enums with classes considering python 2.7 doesn't
@@ -165,18 +140,45 @@ class ExpressionTree(TreeNode):
     self.expr = instr
     self.children = []
     self.populate()
+
+  @staticmethod
+  def retrieveOperands(expression):
+    ret = []
+    if isinstance(expression, ConversionOp) or \
+        isinstance(expression, CopyOperand):
+      ret.append(expression.v)
+      return ret
+    elif isinstance(expression, BinOp) or \
+          isinstance(expression, Icmp):
+      ret.append(expression.v1)
+      ret.append(expression.v2)
+      return ret
+    # This is a pretty stupid way of checking, but checking for an instance of
+    # the Select class causes an error
+    elif isinstance(expression, Instr) and \
+          expression.getOpName() is 'select':
+      ret.append(expression.c)
+      ret.append(expression.v1)
+      ret.append(expression.v2)
+      return ret
+    elif isinstance(expression, Br):
+      ret.append(expression.cond)
+      ret.append(expression.true)
+      ret.append(expression.false)
+      return ret
+    elif isinstance(expression, Ret):
+      ret.append(expression.val)
+      return ret
+    # TODO: more fitting exception
+    raise Exception('Operation does not exist or is not supported yet')
   
   def populate(self):
     nt = self.nodeType()
     if nt is NodeType.Operation:
       self.symbol = self.expr.getOpName()
-
-      # TODO: Replace this with something a bit more generic, since only binary
-      # operations are supported for now (and we know how the BinOp class
-      # looks like) we can get away with this hard coded part
-      self.children.append(ExpressionTree(self.expr.v1))
-      self.children.append(ExpressionTree(self.expr.v2))
-
+      ch = ExpressionTree.retrieveOperands(self.expr)
+      for c in ch:
+        self.children.append(ExpressionTree(c))
     elif nt is NodeType.Wildcard or nt is NodeType.ConstWildcard:
       self.symbol = self.expr.getName()
     elif nt is NodeType.ConstVal:
@@ -202,10 +204,43 @@ class ExpressionTree(TreeNode):
       raise Exception('ExpressionTree\'s type unknown or not implemented yet')
     return ret
 
+ArityLookup = {
+  'trunc' : 1,
+  'zext' : 1,
+  'sext' : 1,
+  'ZExtOrTrunc' : 1,
+  'ptrtoint' : 1,
+  'inttoptr' : 1,
+  'bitcast' : 1,
+  'ret' : 1,
+  'add' : 2,
+  'sub' : 2,
+  'mul' : 2,
+  'udiv' : 2,
+  'sdiv' : 2,
+  'urem' : 2,
+  'srem' : 2,
+  'shl' : 2,
+  'ashr' : 2,
+  'lshr' : 2,
+  'and' : 2,
+  'or' : 2,
+  'xor' : 2,
+  'icmp' : 2,
+  'select' : 3,
+  'br' : 3
+}
+
 class PrefixTree(TreeNode):
   def __init__(self, symbol, numOfChildren):
     super(PrefixTree, self).__init__(symbol, numOfChildren)
   
+  @staticmethod
+  def arity(symbol):
+    if symbol in ArityLookup:
+      return ArityLookup[symbol]
+    return 0
+
   def nodeType(self):
     ret = None
     if len(self.children) > 0:
@@ -260,12 +295,6 @@ class counter(object):
     current = self.id
     self.id = self.id + 1
     return current
-
-######################################################
-
-# TODO: return valid priority
-def priority(pat):
-  return 1
 
 ######################################################
 
@@ -328,11 +357,12 @@ def createChooser(choice):
 ######################################################
 
 class AutomataBuilder(object):
-  def __init__(self, chooser):
+  def __init__(self, chooser, prioritytable):
     self.pos = {}
     self.automaton = DFA()
     self.count = counter()
     self.chooser = createChooser(chooser)
+    self.PriorityLookup = prioritytable
 
   def localGetNext(self):
     return self.count.getNext()
@@ -364,8 +394,7 @@ class AutomataBuilder(object):
       if subp is not None:
         nt = subp.nodeType()
         if (nt is NodeType.Operation and subp.symbol is f) or \
-            (nt is NodeType.ConstVal):
-            #(nt is NodeType.ConstWildcard) or \
+            (nt is NodeType.ConstVal and subp.symbol is f):
           newP.append(ph)
     return newP
 
@@ -400,19 +429,20 @@ class AutomataBuilder(object):
         V.append(ph)
     return V
 
-  @staticmethod
-  def exists(p, M):
+  def exists(self, p, M):
     for m in M:
-      if priority(m) >= priority(p):
+      if self.priority(m) >= self.priority(p):
         return True
     return False
 
-  @staticmethod
-  def acceptancCondition(P, M):
+  def acceptancCondition(self, P, M):
     for p in P:
-      if not AutomataBuilder.exists(p, M):
+      if not self.exists(p, M):
         return False
     return True
+
+  def priority(self, pat):
+    return self.PriorityLookup[pat]
 
   # Applies renaming of states
   def applyDFARename(self):
@@ -483,41 +513,42 @@ class AutomataBuilder(object):
   # P : list of patterns
   def createAutomaton(self, s, e, P, sinkState = None):
     assert(len(P) is not 0), "Can't generate automaton using 0 patterns"
-    print("s:{}\te:{}\tP:{}".format(s, e.symbol, P))
-    #set_trace()
-    print('######')
-    e.dump()
-    print('######')
+    print("s:{}\te:{}\tP:{}".format(s, e.symbol, len(P)))
     M = set(p for p in P if p.src_tree.subsumes(e))
-    # TODO: depend on actual priority instead of len(P) as this might result in 
-    # infinite recursion if multiple patterns in P unify
-    if len(M) is not 0 and AutomataBuilder.acceptancCondition(P, M) and len(P) is 1:
+    if len(M) is not 0 and self.acceptancCondition(P, M):
       self.automaton.finalizeState(s)
-      self.pos[s] = M.pop().name
+      m = M.pop()
+      while (len(M) > 0):
+        n = M.pop()
+        if self.priority(n) > self.priority(m):
+          m = n
+      self.pos[s] = m.name
     else:
       path = self.chooser.makeChoice(e, P)
       self.pos[s] = path if len(path) is not 0 else 'empty'
       V = AutomataBuilder.patternsWithVariablesAt(P, path)
       F =  self.symbolsAt(path, P)
       if len(V) != 0:
+        eDeepcopy = copy.deepcopy(e)
         sinkState = str(self.localGetNext())
         self.automaton.addState(str(sinkState))
         self.automaton.addTransition(Notequal, s, str(sinkState))
         st = PrefixTree(Notequal, 0)
-        e.replaceAt(path, st)
-        self.constrainSink(sinkState, e, V, path)
+        eDeepcopy.replaceAt(path, st)
+        self.constrainSink(sinkState, eDeepcopy, V, path)
         #self.createAutomaton(str(sinkState), e, V, None)
       elif sinkState is not None and len(V) == 0:
         self.automaton.addTransition(Notequal, s, str(sinkState))
 
       for f in F:
+        eDeepcopy = copy.deepcopy(e)
         freshState = str(self.localGetNext())
         self.automaton.addState(str(freshState))
         self.automaton.addTransition(f, s, str(freshState))
-        st = PrefixTree(f, arity(f))
+        st = PrefixTree(f, PrefixTree.arity(f))
         recursP = AutomataBuilder.recursiveP(f, P, path)
-        e.replaceAt(path, st)
-        self.createAutomaton(str(freshState), e, recursP, sinkState)
+        eDeepcopy.replaceAt(path, st)
+        self.createAutomaton(str(freshState), eDeepcopy, recursP, sinkState)
 
 ######################################################
 
@@ -550,13 +581,15 @@ def generate_automaton(opts, out):
     name, pre, src_bb, tgt_bb, src, tgt, src_used, tgt_used, tgt_skip = opt[1]
     phs.append(peepholeopt(name, pre, src, tgt))
 
+  PriorityLookup = {p:(len(phs) - i) for i,p in enumerate(phs)}
+
   prefixDc = PrefixTree(None, 0)
   prefixNc = PrefixTree(None, 0)
   prefixMc = PrefixTree(None, 0)
   
-  ABdc = AutomataBuilder(discriminatingChoice)
-  ABnc = AutomataBuilder(naiveChoice)
-  ABmc = AutomataBuilder(minimizedChoice)
+  ABdc = AutomataBuilder(discriminatingChoice, PriorityLookup)
+  ABnc = AutomataBuilder(naiveChoice, PriorityLookup)
+  ABmc = AutomataBuilder(minimizedChoice, PriorityLookup)
 
   startStateDc = ABdc.localGetNext()
   startStateNc = ABnc.localGetNext()
