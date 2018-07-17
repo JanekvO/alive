@@ -110,3 +110,62 @@ class DFA(FiniteAutomata):
     assert(source not in self.graph or (source in self.graph and symbol not in self.graph[source])), \
       "Transition from '{0}' using symbol '{1}' already exists".format(source, symbol)
     super(DFA,self).addTransition(symbol, source, destination)
+
+  def minimize(self):
+    F = frozenset(self.final)
+    notF = frozenset(s for s in self.graph.keys() if s not in F)
+
+    PPartition = set([F, notF])
+    WPartition = set([F])
+
+    print('Num of states before: {}'.format(len(self.graph.keys())))
+
+    while len(WPartition) is not 0:
+      A = WPartition.pop()
+      X = {}
+      for src,edg in self.graph.items():
+        for sym,dst in edg.items():
+          if dst[0] in A:
+            if sym not in X:
+              X[sym] = set(src)
+            else:
+              X[sym].add(src)
+
+      for sym in X.keys():
+        newPPartition = set(PPartition)
+        for Y in newPPartition:
+          inter = Y & X[sym]
+          dif = Y - X[sym]
+
+          if len(inter) is not 0 and len(dif) is not 0 and Y in PPartition:
+            PPartition.remove(Y)
+            PPartition.add(frozenset(inter))
+            PPartition.add(frozenset(dif))
+            if Y in WPartition:
+              WPartition.remove(Y)
+              WPartition.add(frozenset(inter))
+              WPartition.add(frozenset(dif))
+            else:
+              if len(inter) <= len(dif):
+                WPartition.add(frozenset(inter))
+              else:
+                WPartition.add(frozenset(dif))
+
+    for P in PPartition:
+      rep = list(P)[0]
+      for r in P:
+        if r is not rep:
+          for src,edg in self.graph.items():
+            for sym,dst in edg.items():
+              if r is dst[0]:
+                self.graph[src][sym].remove(r)
+                self.graph[src][sym].append(rep)
+        if len(P) > 1 and r is not rep:
+          if r in self.graph.keys():
+            del self.graph[r]
+          if r in self.states:
+            self.states.remove(r)
+          if r in self.final:
+            self.final.remove(r)
+
+    print('Num of states after: {}'.format(len(self.graph.keys())))
