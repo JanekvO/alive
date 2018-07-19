@@ -12,10 +12,9 @@ DO_STATS = True
 SIMPLIFY = True
 LIMITER = False
 
-#Notequal = u'\u2260'
-Notequal = 'Sink'
+Notequal = u'\u2260'
+#Notequal = 'Sink'
 ConstWC = 'C*'
-WC = '%*'
 
 ############################# Helper functions ###########################
 
@@ -478,7 +477,7 @@ class AutomataBuilder(object):
   # Wildcard. This diverges from literature as regular literature assumes a single
   # form of wildcard, whereas in our case the subsumption is as follows:
   # wildcards > ConstWildcards > Constants 
-  def constrainSink(self, s, e, V, path):
+  def createSink(self, s, e, V, path):
     nodeTypes = set()
     for p in V:
       subtree = p.src_tree.subtree(path)
@@ -491,27 +490,45 @@ class AutomataBuilder(object):
     PWithConstWC = AutomataBuilder.patternsWithConstWCAt(V, path)
     PWithNotConstWC = AutomataBuilder.patternsWithWCAt(V, path)
 
-    sinkState = None
     if NodeType.Wildcard in nodeTypes:
       WCState = str(self.localGetNext())
       self.automaton.addState(WCState)
-      self.automaton.addTransition(WC, s, WCState)
-      sinkState = WCState
-      st = PrefixTree(WC, 0)
+      self.automaton.addTransition(Notequal, s, WCState)
+      st = PrefixTree(Notequal, 0)
       e.replaceAt(path, st)
-      self.createAutomaton(WCState, e, PWithNotConstWC, None)
+      self.createAutomaton(WCState, e, PWithNotConstWC)
+    else:
+      divergingSink = self.closestDivergingSink(s)
+      if divergingSink is not None:
+        self.automaton.addTransition(Notequal, s, divergingSink)
+
     if NodeType.ConstWildcard in nodeTypes:
       ConstWCState = str(self.localGetNext())
       self.automaton.addState(ConstWCState)
       self.automaton.addTransition(ConstWC, s, ConstWCState)
       st = PrefixTree(ConstWC, 0)
       e.replaceAt(path, st)
-      self.createAutomaton(ConstWCState, e, PWithConstWC, sinkState)
+      self.createAutomaton(ConstWCState, e, PWithConstWC)
+
+  def closestDivergingSink(self, s):
+    dfa = self.automaton.graph
+    parents = set([s])
+    markedStates = set([])
+    while len(parents) is not 0:
+      curState = parents.pop()
+      for src,edg in dfa.items():
+        for sym,dst in edg.items():
+          if curState is dst[0] and curState not in markedStates:
+            parents.add(src)
+            markedStates.add(curState)
+            if Notequal in dfa[src] and curState not in dfa[src][Notequal]:
+              return dfa[src][Notequal][0]
+    return None
 
   # s : current state
   # e : prefix tree
   # P : list of patterns
-  def createAutomaton(self, s, e, P, sinkState = None):
+  def createAutomaton(self, s, e, P):
     assert(len(P) is not 0), "Can't generate automaton using 0 patterns"
     print("s:{}\te:{}\tP:{}".format(s, e.symbol, len(P)))
     M = set(p for p in P if p.src_tree.subsumes(e))
@@ -531,14 +548,15 @@ class AutomataBuilder(object):
       if len(V) != 0:
         eDeepcopy = copy.deepcopy(e)
         sinkState = str(self.localGetNext())
-        self.automaton.addState(str(sinkState))
-        self.automaton.addTransition(Notequal, s, str(sinkState))
+        self.automaton.addState(sinkState)
+        self.automaton.addTransition(Notequal, s, sinkState)
         st = PrefixTree(Notequal, 0)
         eDeepcopy.replaceAt(path, st)
-        self.constrainSink(sinkState, eDeepcopy, V, path)
-        #self.createAutomaton(str(sinkState), e, V, None)
-      elif sinkState is not None and len(V) == 0:
-        self.automaton.addTransition(Notequal, s, str(sinkState))
+        self.createSink(sinkState, eDeepcopy, V, path)
+      else:
+        divergingSink = self.closestDivergingSink(s)
+        if divergingSink is not None:
+          self.automaton.addTransition(Notequal, s, divergingSink)
 
       for f in F:
         eDeepcopy = copy.deepcopy(e)
@@ -548,7 +566,7 @@ class AutomataBuilder(object):
         st = PrefixTree(f, PrefixTree.arity(f))
         recursP = AutomataBuilder.recursiveP(f, P, path)
         eDeepcopy.replaceAt(path, st)
-        self.createAutomaton(str(freshState), eDeepcopy, recursP, sinkState)
+        self.createAutomaton(str(freshState), eDeepcopy, recursP)
 
 ######################################################
 
