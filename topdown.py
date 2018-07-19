@@ -539,7 +539,9 @@ class AutomataBuilder(object):
         n = M.pop()
         if self.priority(n) > self.priority(m):
           m = n
-      self.pos[s] = m.name
+      name = m.name.replace(" ", "")
+      name = m.name.replace(":","_")
+      self.pos[s] = name
     else:
       path = self.chooser.makeChoice(e, P)
       self.pos[s] = path if len(path) is not 0 else 'empty'
