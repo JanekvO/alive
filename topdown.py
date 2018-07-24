@@ -355,9 +355,18 @@ def createChooser(choice):
 
 ######################################################
 
+class StateAuxiliary(object):
+  def __init__(self, prefix, patterns, path=None, accepting=False):
+    self.prefix = prefix
+    self.patterns = patterns
+    self.path = path
+    self.accepting = accepting
+
+######################################################
+
 class AutomataBuilder(object):
   def __init__(self, chooser, prioritytable):
-    self.pos = {}
+    self.stateAuxData = {}
     self.automaton = DFA()
     self.count = counter()
     self.chooser = createChooser(chooser)
@@ -396,6 +405,16 @@ class AutomataBuilder(object):
             (nt is NodeType.ConstVal and subp.symbol is f):
           newP.append(ph)
     return newP
+  
+  @staticmethod
+  def patternsWithSymbAt(P, path, symb):
+    F = set()
+    for ph in P:
+      p = ph.src_tree
+      f = p.subtree(path)
+      if f is not None and f.symbol is symb:
+        F.add(ph)
+    return F
 
   @staticmethod
   def patternsWithWCAt(P, path):
@@ -428,6 +447,36 @@ class AutomataBuilder(object):
         V.append(ph)
     return V
 
+  def show(self, filename):
+    dfa = self.automaton
+    addedNodes = []
+    dot = Digraph(format='xdot')
+    addedNodes.append(dfa.init)
+    for fs in dfa.final:
+      addedNodes.append(fs)
+    dot.node(str(dfa.init), 'initial')
+    for fs in dfa.final:
+      acSt = list(self.stateAuxData[fs].patterns)[0]
+      # Sanitize for graphviz
+      sanitize = {' ' : '', ':': '_'}
+      name = acSt.name
+      for b,a in sanitize.items():
+        name = name.replace(b, a)
+      dot.node(fs, name, { 'color' : 'green' })
+    for src,edg in dfa.graph.items():
+      if src not in addedNodes:
+        sState = self.stateAuxData[src]
+        dot.node(str(src), str(sState.path))
+      addedNodes.append(src)
+      for sym,dst in edg.items():
+        for d in dst:
+          if d not in addedNodes:
+            addedNodes.append(d)
+            dState = self.stateAuxData[d]
+            dot.node(str(d), str(dState.path))
+          dot.edge(str(src), str(d), sym)
+    dot.render(filename, cleanup=True)
+  
   def exists(self, p, M):
     for m in M:
       if self.priority(m) >= self.priority(p):
@@ -443,36 +492,6 @@ class AutomataBuilder(object):
   def priority(self, pat):
     return self.PriorityLookup[pat]
 
-  # Applies renaming of states
-  def applyDFARename(self):
-    if len(self.pos) is not 0:
-      # template for format, basically says <unique state id>@<path to be checked>
-      template = "{}@{}"
-      newDFA = DFA()
-      # Rename initial state
-      newDFA.initializeState(template.format(self.automaton.init, self.pos[self.automaton.init]))
-
-      # Rename final states
-      for s in self.automaton.final:
-        newDFA.finalizeState(template.format(s, self.pos[s]))
-
-      # Rename states
-      for s in self.automaton.states:
-        newDFA.addState(template.format(s, self.pos[s]))
-      
-      # Rename transitions
-      for src,edg in self.automaton.graph.items():
-        for sym,dst in edg.items():
-          for d in dst:
-            #print("from {} to {}, using symbol {}".format(src, d, sym))
-            src_str = template.format(src, self.pos[src])
-            dst_str = template.format(d, self.pos[d])
-            newDFA.addTransition(sym, src_str, dst_str)
-
-      # clear lookup table
-      self.pos = {}
-      self.automaton = newDFA
-  
   # Used to make any sink states more specific to either ConstWildcard or regular
   # Wildcard. This diverges from literature as regular literature assumes a single
   # form of wildcard, whereas in our case the subsumption is as follows:
@@ -485,7 +504,7 @@ class AutomataBuilder(object):
 
     assert(NodeType.ConstWildcard in nodeTypes or \
             NodeType.Wildcard in nodeTypes), 'No (constant) wildcard in sink state, why does this state exist?'
-    self.pos[s] = path if len(path) is not 0 else 'empty'
+    self.stateAuxData[s] = StateAuxiliary(e, V, path=path)
 
     PWithConstWC = AutomataBuilder.patternsWithConstWCAt(V, path)
     PWithNotConstWC = AutomataBuilder.patternsWithWCAt(V, path)
@@ -539,12 +558,11 @@ class AutomataBuilder(object):
         n = M.pop()
         if self.priority(n) > self.priority(m):
           m = n
-      name = m.name.replace(" ", "")
-      name = m.name.replace(":","_")
-      self.pos[s] = name
+      # TODO: fix priority
+      self.stateAuxData[s] = StateAuxiliary(e, [m], accepting=True)
     else:
       path = self.chooser.makeChoice(e, P)
-      self.pos[s] = path if len(path) is not 0 else 'empty'
+      self.stateAuxData[s] = StateAuxiliary(e, P, path=path)
       V = AutomataBuilder.patternsWithVariablesAt(P, path)
       F =  self.symbolsAt(path, P)
       if len(V) != 0:
@@ -627,14 +645,8 @@ def generate_automaton(opts, out):
   ABmc.automaton.initializeState(str(startStateMc))
   ABmc.createAutomaton(str(startStateMc), prefixMc, phs)
 
-  ABdc.applyDFARename()
-  ABdc.automaton.dump()
-  ABdc.automaton.show('automaton_discriminating')
+  ABdc.show('automaton_discriminating')
 
-  ABnc.applyDFARename()
-  ABnc.automaton.dump()
-  ABnc.automaton.show('automaton_naive')
+  ABnc.show('automaton_naive')
 
-  ABmc.applyDFARename()
-  ABmc.automaton.dump()
-  ABmc.automaton.show('automaton_minimizing')
+  ABmc.show('automaton_minimizing')
