@@ -47,7 +47,7 @@ class FiniteAutomata(object):
   # Show graphical representation of finite automata
   def show(self,name):
     addedNodes = []
-    dot = Digraph(format='png')
+    dot = Digraph(format='xdot')
     addedNodes.append(self.init)
     for fs in self.final:
       addedNodes.append(fs)

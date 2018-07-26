@@ -5,6 +5,7 @@ from itertools import izip,count
 from language import *
 from value import *
 from automata import *
+from collections import deque
 
 from pdb import set_trace
 
@@ -489,6 +490,8 @@ class AutomataBuilder(object):
         return False
     return True
 
+  #FIXME: priority should be given to the least subsuming (i.e. most specific
+  # pattern)
   def priority(self, pat):
     return self.PriorityLookup[pat]
 
@@ -549,7 +552,7 @@ class AutomataBuilder(object):
   # P : list of patterns
   def createAutomaton(self, s, e, P):
     assert(len(P) is not 0), "Can't generate automaton using 0 patterns"
-    print("s:{}\te:{}\tP:{}".format(s, e.symbol, len(P)))
+    #print("s:{}\te:{}\tP:{}".format(s, e.symbol, len(P)))
     M = set(p for p in P if p.src_tree.subsumes(e))
     if len(M) is not 0 and self.acceptancCondition(P, M):
       self.automaton.finalizeState(s)
@@ -590,6 +593,12 @@ class AutomataBuilder(object):
 
 ######################################################
 
+def createVar(path):
+  variable = 'x'
+  for p in path:
+    variable = variable + '_{}'.format(p)
+  return variable
+
 def generate_automaton(opts, out):
   root_opts = defaultdict(list)
   opts = list(izip(count(1), opts))
@@ -602,7 +611,7 @@ def generate_automaton(opts, out):
       src_root = local_get_root(opt[4]).getOpName()
 
       # FIXME: sanitize name
-#       out.write('STATISTIC(Rule{0}, "{1}.{0}. {2}");\n'.format(rule, src_root, name))
+      out.write('STATISTIC(Rule{0}, "{1}.{0}. {2}");\n'.format(rule, src_root, name))
 
 #   if SIMPLIFY:
 #     out.write('''
@@ -650,3 +659,69 @@ def generate_automaton(opts, out):
   ABnc.show('automaton_naive')
 
   ABmc.show('automaton_minimizing')
+
+  # Emit C++ code
+  cppLines = []
+  AB = ABdc
+  autom = AB.automaton
+  q = deque([autom.init])
+  marked = set()
+  matchPrototypes = []
+  matchVariables = set()
+  # TODO: Is there a better way than iterating and having this whole blob of code?
+  while len(q) is not 0:
+    hasSink = False
+    current = q.popleft()
+    marked.add(current)
+    dfa = autom.graph
+    if current in dfa.keys():
+      for sym,dsts in dfa[current].items():
+        for dst in dsts:
+          if dst not in marked:
+            q.append(dst)
+    
+    funcString = 'void state_{}()'.format(current)
+    cppLines.append('  ' + funcString + ' {')
+    matchPrototypes.append(funcString + ';')
+    curVar = AB.stateAuxData[current].path
+    if current in autom.final:
+      #TODO: actual replacement
+      nm = list(AB.stateAuxData[current].patterns)[0].name
+      # Sanitize for graphviz
+      sanitize = {' ' : '', ':': '_'}
+      for b,a in sanitize.items():
+        nm = nm.replace(b, a)
+      cppLines.append('    replacement_{}();'.format(nm))
+    else:
+      cppLines.append('    switch ({}) {{'.format(createVar(curVar)))
+      matchVariables.add(createVar(curVar))
+
+      for sym,ddst in dfa[current].items():
+        if sym is Notequal:
+          hasSink = True
+          sink = '      default: state_{}(); break;'.format(ddst[0])
+        else:
+          cppLines.append('      case {}: state_{}(); break;'.format(sym, ddst[0]))
+
+      if hasSink:
+        cppLines.append(sink)
+      else:
+        cppLines.append('      default: break;')
+
+      cppLines.append('    }')
+    cppLines.append('  }')
+    
+  print('\n// State function prototypes')
+  for line in matchPrototypes:
+    print(line)
+  print('')
+
+  varStr = ''
+  for v in matchVariables:
+    varStr = varStr + ' *{},'.format(v)
+  varStr = varStr.rstrip(',') + ';'
+  print('{{\n  Value{}'.format(varStr))
+
+  for line in cppLines:
+    print(line)
+  print('}')
