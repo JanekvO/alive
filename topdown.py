@@ -6,6 +6,9 @@ from language import *
 from value import *
 from automata import *
 from collections import deque
+from precondition import *
+from gen import MatchBuilder, CodeGenerator, minimal_type_constraints
+from codegen import *
 
 from pdb import set_trace
 
@@ -243,14 +246,15 @@ class PrefixTree(TreeNode):
 
   def nodeType(self):
     ret = None
-    if len(self.children) > 0:
-      ret = NodeType.Operation
-    elif self.symbol[0] is 'C':
-      ret = NodeType.ConstWildcard
-    elif self.symbol[0] is '%':
-      ret = NodeType.Wildcard
-    else:
-      ret = NodeType.ConstVal
+    if self.symbol is not None:
+      if len(self.children) > 0:
+        ret = NodeType.Operation
+      elif self.symbol[0] is 'C':
+        ret = NodeType.ConstWildcard
+      elif self.symbol[0] is '%':
+        ret = NodeType.Wildcard
+      else:
+        ret = NodeType.ConstVal
     return ret
 
   def findWildcardPaths(self):
@@ -274,11 +278,14 @@ class PrefixTree(TreeNode):
 ######################################################
 
 class peepholeopt(object):
-  def __init__(self, name, pre, source, target):
+  def __init__(self, rule, name, pre, source, target, target_skip):
+    self.rule = rule
     self.name = name
     self.pre = pre
     self.source = source
     self.target = target
+    self.target_skip = target_skip
+    self.cg = TopDownCodeGenerator()
 
     self.src_tree = ExpressionTree(local_get_root(source))
     # Not necessary to put target in a ExpressionTree as we don't do any
@@ -513,24 +520,26 @@ class AutomataBuilder(object):
     PWithNotConstWC = AutomataBuilder.patternsWithWCAt(V, path)
 
     if NodeType.Wildcard in nodeTypes:
+      eSink = copy.deepcopy(e)
       WCState = str(self.localGetNext())
       self.automaton.addState(WCState)
       self.automaton.addTransition(Notequal, s, WCState)
       st = PrefixTree(Notequal, 0)
-      e.replaceAt(path, st)
-      self.createAutomaton(WCState, e, PWithNotConstWC)
+      eSink.replaceAt(path, st)
+      self.createAutomaton(WCState, eSink, PWithNotConstWC)
     else:
       divergingSink = self.closestDivergingSink(s)
       if divergingSink is not None:
         self.automaton.addTransition(Notequal, s, divergingSink)
 
     if NodeType.ConstWildcard in nodeTypes:
+      eCWC = copy.deepcopy(e)
       ConstWCState = str(self.localGetNext())
       self.automaton.addState(ConstWCState)
       self.automaton.addTransition(ConstWC, s, ConstWCState)
       st = PrefixTree(ConstWC, 0)
-      e.replaceAt(path, st)
-      self.createAutomaton(ConstWCState, e, PWithConstWC)
+      eCWC.replaceAt(path, st)
+      self.createAutomaton(ConstWCState, eCWC, PWithConstWC)
 
   def closestDivergingSink(self, s):
     dfa = self.automaton.graph
@@ -562,7 +571,7 @@ class AutomataBuilder(object):
         if self.priority(n) > self.priority(m):
           m = n
       # TODO: fix priority
-      self.stateAuxData[s] = StateAuxiliary(e, [m], accepting=True)
+      self.stateAuxData[s] = StateAuxiliary(copy.deepcopy(e), [m], accepting=True)
     else:
       path = self.chooser.makeChoice(e, P)
       self.stateAuxData[s] = StateAuxiliary(e, P, path=path)
@@ -599,6 +608,180 @@ def createVar(path):
     variable = variable + '_{}'.format(p)
   return variable
 
+class TopDownCodeGenerator(CodeGenerator):
+  def __init__(self):
+    super(TopDownCodeGenerator, self).__init__()
+    self.duplicate = {}
+  
+  def get_cexp(self, var):
+    'Return a CExp referring to this name or value, also considering the type of variable'
+
+    if isinstance(var, Constant):
+      return var.get_Value(self)
+    
+    if isinstance(var, Value):
+      name = var.getName()
+      if name[0] is 'C':
+        return CVariable(name)
+      else:
+        return CVariable(self.get_name(var))
+
+class TopDownMatchBuilder(MatchBuilder):
+  def subpattern(self, value):
+    'Return a CExpr which matches the operand value and binds its variable (top-down version)'
+    # TODO: generalize match builder
+
+    assert isinstance(value, (Instr, Input, ConstantVal))
+
+    if value not in self.bound:
+      # removed the m_Specific matcher since we don't look for multiple same variables in TD
+      self.bound.append(value)
+      name = self.manager.get_name(value)
+    else:
+      # FIXME: if number of duplicates > 2, we're in trouble
+      origin_name = self.manager.get_name(value)
+      dupl_set = self.manager.duplicate[value] - set([origin_name])
+      assert(len(dupl_set) == 1)
+      name = list(dupl_set)[0]
+      self.extras.append(CBinExpr('==', self.manager.get_cexp(value), CVariable(name)))
+
+    return CFunctionCall('m_Value', CVariable(name))
+  
+  def value_emit(self, tree, current_coordinate):
+    value = tree.expr
+
+    assert isinstance(value, (Instr, Input, ConstantVal))
+    if value not in self.bound:
+      self.bound.append(value)
+    name = createVar(current_coordinate)
+    return CFunctionCall('m_Value', CVariable(name))
+
+  @staticmethod
+  def match_value(value, manager):
+    mb = TopDownMatchBuilder(manager, value)
+    exp = value.visit_source(mb)
+    return exp
+  
+  @staticmethod
+  def new_match_value(manager, tree, coordinate):
+    st = tree.subtree(coordinate)
+    mb = TopDownMatchBuilder(manager, st.expr)
+
+    if isinstance(st.expr, BinOp):
+      r1_coordinate = copy.deepcopy(coordinate)
+      r2_coordinate = copy.deepcopy(coordinate)
+      r1_coordinate.append(1)
+      r2_coordinate.append(2)
+      r1 = mb.value_emit(st.childAt(1), r1_coordinate)
+      r2 = mb.value_emit(st.childAt(2), r2_coordinate)
+
+      op = BinOp.caps[st.expr.op]
+
+      if 'nsw' in st.expr.flags and 'nuw' in st.expr.flags:
+        return CFunctionCall('match',
+          mb.get_my_ref(),
+          CFunctionCall('m_CombineAnd',
+            CFunctionCall('m_NSW' + op, r1, r2),
+            CFunctionCall('m_NUW' + op,
+              CFunctionCall('m_Value'),
+              CFunctionCall('m_Value'))))
+
+      if 'nsw' in st.expr.flags:
+        return mb.simple_match('m_NSW' + op, r1, r2)
+
+      if 'nuw' in st.expr.flags:
+        return mb.simple_match('m_NUW' + op, r1, r2)
+
+      if 'exact' in st.expr.flags:
+        return CFunctionCall('match',
+          mb.get_my_ref(),
+          CFunctionCall('m_Exact', CFunctionCall('m_' + op, r1, r2)))
+
+      return mb.simple_match('m_' + op, r1, r2)
+    else:
+      return st.expr.visit_source(mb)
+
+def RepresentsInt(s):
+    return re.match(r"[-+]?\d+$", s) is not None
+
+def generate_precondition(value, manager):
+  mb = TopDownMatchBuilder(manager, value)
+  value.visit_source(mb)
+  return mb.extras, mb.bound
+
+def generate_replacement(phopt):
+  '''Takes a the peephole optimization for which we
+  want to generate the replacement code'''
+  rule = phopt.rule
+  name = phopt.name
+  pre = phopt.pre
+  src = phopt.source
+  tgt = phopt.target
+  tgt_skip = phopt.target_skip
+  cg = phopt.cg
+
+  root = local_get_root(src)
+  todo = [root]
+  clauses = []
+
+  while todo:
+    val = todo.pop()
+    if isinstance(val, Instr):
+      precondition, children = generate_precondition(val, cg)
+      clauses.extend(precondition)
+      todo.extend(reversed(children))
+    val.register_types(cg)
+  
+  cg.phase = cg.Target
+  
+  pre.register_types(cg)
+
+  for name in cg.named_types:
+    cg.unify(*cg.named_types[name])
+  
+  tgt_vals = [v for k,v in tgt.iteritems() if not (isinstance(v,Input) or k in tgt_skip)]
+
+  for value in tgt_vals:
+    value.register_types(cg)
+  
+  root_name = root.getName()
+  new_root = tgt[root_name]
+  cg.unify(root, new_root)
+  clauses.extend(cg.clauses)
+
+  for v,t in cg.guaranteed.iteritems():
+    if not cg.bound(v): continue
+
+    clauses.extend(minimal_type_constraints(cg.get_llvm_type(v), cg.required[v], t))
+
+  if not isinstance(pre, TruePred):
+    clauses.append(pre.visit_pre(cg))
+  
+  if DO_STATS and LIMITER:
+    clauses.append(CBinExpr('<', CVariable('Rule' + str(rule)), CVariable('10000')))
+
+  body = []
+
+  if DO_STATS:
+    body = [CUnaryExpr('++', CVariable('Rule' + str(rule)))]
+
+  for value in tgt_vals:
+    if isinstance(value, Instr) and value != new_root:
+      body.extend(value.visit_target(cg, True))
+  
+  if isinstance(new_root, CopyOperand):
+    body.append(
+      CDefinition.init(
+        cg.PtrInstruction,
+        cg.get_cexp(tgt[root_name]),
+        CFunctionCall('replaceInstUsesWith', CVariable('*I'), cg.get_cexp(new_root.v))))
+  else:
+    body.extend(new_root.visit_target(cg, False))
+
+  body.append(CReturn(cg.get_cexp(new_root)))
+
+  return clauses, body
+
 def generate_automaton(opts, out):
   root_opts = defaultdict(list)
   opts = list(izip(count(1), opts))
@@ -623,54 +806,34 @@ def generate_automaton(opts, out):
   phs = []
 
   # sort opts by root opcode
-  for opt in opts:
-    root_opts[local_get_root(opt[1][4]).getOpName()].append(opt)
-    name, pre, src_bb, tgt_bb, src, tgt, src_used, tgt_used, tgt_skip = opt[1]
-    phs.append(peepholeopt(name, pre, src, tgt))
+  for rule, opt in opts:
+    root_opts[local_get_root(opt[4]).getOpName()].append(opt)
+    name, pre, src_bb, tgt_bb, src, tgt, src_used, tgt_used, tgt_skip = opt
+    phs.append(peepholeopt(rule, name, pre, src, tgt, tgt_skip))
 
   PriorityLookup = {p:(len(phs) - i) for i,p in enumerate(phs)}
 
   prefixDc = PrefixTree(None, 0)
-  prefixNc = PrefixTree(None, 0)
-  prefixMc = PrefixTree(None, 0)
   
   ABdc = AutomataBuilder(discriminatingChoice, PriorityLookup)
-  ABnc = AutomataBuilder(naiveChoice, PriorityLookup)
-  ABmc = AutomataBuilder(minimizedChoice, PriorityLookup)
 
   startStateDc = ABdc.localGetNext()
-  startStateNc = ABnc.localGetNext()
-  startStateMc = ABmc.localGetNext()
 
   ABdc.automaton.addState(str(startStateDc))
   ABdc.automaton.initializeState(str(startStateDc))
   ABdc.createAutomaton(str(startStateDc), prefixDc, phs)
 
-  ABnc.automaton.addState(str(startStateNc))
-  ABnc.automaton.initializeState(str(startStateNc))
-  ABnc.createAutomaton(str(startStateNc), prefixNc, phs)
-
-  ABmc.automaton.addState(str(startStateMc))
-  ABmc.automaton.initializeState(str(startStateMc))
-  ABmc.createAutomaton(str(startStateMc), prefixMc, phs)
-
   ABdc.show('automaton_discriminating')
 
-  ABnc.show('automaton_naive')
-
-  ABmc.show('automaton_minimizing')
-
   # Emit C++ code
-  cppLines = []
   AB = ABdc
   autom = AB.automaton
   q = deque([autom.init])
   marked = set()
-  matchPrototypes = []
-  matchVariables = set()
-  # TODO: Is there a better way than iterating and having this whole blob of code?
+  stateFunctions = []
+  usedVariables = {}
+  # There should be a better way than iterating and having this whole blob of code
   while len(q) is not 0:
-    hasSink = False
     current = q.popleft()
     marked.add(current)
     dfa = autom.graph
@@ -680,48 +843,121 @@ def generate_automaton(opts, out):
           if dst not in marked:
             q.append(dst)
     
-    funcString = 'void state_{}()'.format(current)
-    cppLines.append('  ' + funcString + ' {')
-    matchPrototypes.append(funcString + ';')
-    curVar = AB.stateAuxData[current].path
-    if current in autom.final:
-      #TODO: actual replacement
-      nm = list(AB.stateAuxData[current].patterns)[0].name
+    stateFunctionBody = []
+    currentStateAux = AB.stateAuxData[current]
+    coordinate = currentStateAux.path
+
+    print("current state processed: {}".format(current))
+
+    if currentStateAux.accepting:
+      nm = list(currentStateAux.patterns)[0].name
       # Sanitize for graphviz
       sanitize = {' ' : '', ':': '_'}
       for b,a in sanitize.items():
         nm = nm.replace(b, a)
-      cppLines.append('    replacement_{}();'.format(nm))
-    else:
-      cppLines.append('    switch ({}) {{'.format(createVar(curVar)))
-      matchVariables.add(createVar(curVar))
-
-      for sym,ddst in dfa[current].items():
-        if sym is Notequal:
-          hasSink = True
-          sink = '      default: state_{}(); break;'.format(ddst[0])
-        else:
-          cppLines.append('      case {}: state_{}(); break;'.format(sym, ddst[0]))
-
-      if hasSink:
-        cppLines.append(sink)
+      
+      # TODO: generate the replacement without basically creating pattern matching
+      # of the old generator
+      clauses,replacement = generate_replacement(list(currentStateAux.patterns)[0])
+      if clauses:
+        cif = CIf(CBinExpr.reduce('&&', clauses), \
+          replacement, \
+          [CReturn(CVariable('nullptr'))])
+        stateFunctionBody.append(cif)
       else:
-        cppLines.append('      default: break;')
+        stateFunctionBody.extend(replacement)
 
-      cppLines.append('    }')
-    cppLines.append('  }')
-    
-  print('\n// State function prototypes')
-  for line in matchPrototypes:
-    print(line)
-  print('')
+    else:
+      #FIXME: a lot of matchbuilding is done here instead of its designated class
+      iflist = []
+      sink = False
+      for sym,ddst in dfa[current].items():
+        rooted_prefix = currentStateAux.prefix.subtree(coordinate)
+        if sym is Notequal:
+          sink = ddst[0]
+        elif RepresentsInt(sym):
+          source_tree = list(currentStateAux.patterns)[0].src_tree.subtree(coordinate)
+          ifc_var = CVariable(str(source_tree.expr))
+          ifc_subexpr = CFunctionCall('m_SpecificInt', ifc_var)
+          ifc = CFunctionCall('match', CVariable(createVar(coordinate)), ifc_subexpr)
+          ifb = CGoto(CLabel('state_{}'.format(ddst[0])))
+          iflist.append((ifc, [ifb]))
+        # TODO: add support for overlapping C* variables with differing names
+        elif sym is ConstWC:
+          P = AutomataBuilder.patternsWithConstWCAt(currentStateAux.patterns, coordinate)
+          assert(len(P) > 0), \
+            'There should exists at least 1 pattern with const variable'
+          source_tree = list(P)[0].src_tree.subtree(coordinate)
+          subexpr_str = str(source_tree.expr)
+          ifc_var = CVariable(subexpr_str)
+          ifc_subexpr = CFunctionCall('m_ConstantInt', ifc_var)
+          ty = CPtrType(CTypeName('ConstantInt'))
+          # Add to variables to emit
+          if subexpr_str not in usedVariables:
+            usedVariables[subexpr_str] = ty
+          ifc = CFunctionCall('match', CVariable(createVar(coordinate)), ifc_subexpr)
+          ifb = CGoto(CLabel('state_{}'.format(ddst[0])))
+          iflist.append((ifc, [ifb]))
+        else:
+          P = AutomataBuilder.patternsWithSymbAt(currentStateAux.patterns, \
+            coordinate, \
+            sym)
+          assert(len(P) > 0), \
+            'There should exists at least 1 pattern for symbol {}'.format(sym)
 
-  varStr = ''
-  for v in matchVariables:
-    varStr = varStr + ' *{},'.format(v)
-  varStr = varStr.rstrip(',') + ';'
-  print('{{\n  Value{}'.format(varStr))
+          for p in P:
+            exprtree = p.src_tree.subtree(coordinate)
+            p.cg.value_names[exprtree.expr] = createVar(coordinate)
+            p.cg.bind_value(exprtree.expr)
+            for i in range(1, exprtree.numOfChildren() + 1):
+              child = exprtree.childAt(i)
+              assert(child is not None)
+              childpath = list(coordinate)
+              childpath.append(i)
+              varName = createVar(childpath)
+              if child.expr not in p.cg.value_names:
+                p.cg.value_names[child.expr] = varName
+                p.cg.duplicate[child.expr] = set()
+                p.cg.duplicate[child.expr].add(varName)
+              else:
+                ctype = p.cg.value_ctype(child.expr)
+                p.cg.bind_name(varName, ctype)
+                p.cg.duplicate[child.expr].add(varName)
 
-  for line in cppLines:
-    print(line)
-  print('}')
+          # Pick any pattern and continue with codegen
+          pat = list(P)[0]
+          source_tree = pat.src_tree.subtree(coordinate)
+          cg = pat.cg
+          ifc = TopDownMatchBuilder.new_match_value(cg, pat.src_tree, coordinate)
+          #ifc = TopDownMatchBuilder.match_value(source_tree.expr, cg)
+          ifb = CGoto(CLabel('state_{}'.format(ddst[0])))
+          iflist.append((ifc, [ifb]))
+          for v,n in cg.value_names.items():
+            t = cg.value_ctype(v)
+            if n not in usedVariables:
+              usedVariables[n] = t
+      
+      if sink:
+        elsebody = [CGoto(CLabel('state_{}'.format(sink)))]
+      else:
+        # Cheating here, nullptr is technically not a variable
+        elsebody = [CReturn(CVariable('nullptr'))]
+
+      stateFunctionBody.append(CElseIf(iflist, elsebody))
+
+    functionString = 'state_{}'.format(current)
+    stateFunctions.append((functionString, stateFunctionBody))
+
+  out.write('Instruction *InstCombiner::runOnInstruction(Instruction *I) {\n')
+  varDecl_it = CDefinition.block((t, CVariable(n)) for n,t in usedVariables.iteritems())
+  varDecl = iter_seq(line + d.format() for d in varDecl_it)
+  out.write(varDecl.format() + '\n')
+  out.write('    x = I;\n    goto state_0;\n\n')
+
+  for fn,b in stateFunctions:
+    body_iter = (line + s.format() for s in b)
+    body = seq(line, '{', iter_seq(body_iter), line, '}')
+    case = nest(2, seq(line, fn + ':', body))
+    out.write(case.format())
+
+  out.write('\n}')

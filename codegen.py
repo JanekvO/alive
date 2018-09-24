@@ -85,6 +85,13 @@ class CExpression(CFragment):
   def format(self):
     return self.formatExpr(18) + ';'
 
+class CLabel(CExpression):
+  def __init__(self, label):
+    self.label = label
+  
+  def formatExpr(self, prec=0):
+    return text(self.label)
+
 class CVariable(CExpression):
   def __init__(self, name):
     self.name = name
@@ -209,6 +216,25 @@ class CIf(CStatement):
 
     return f
 
+class CElseIf(CStatement):
+  # iflist is a list of (condition, body) pairs,
+  # default is the body of the final else case (if necessary)
+  def __init__(self, iflist, elsebody=[]):
+    self.iflist = iflist
+    self.elsebody = elsebody
+
+  def format(self):
+    f = '  '
+    for case in self.iflist:
+      c,b = case
+      f = f + 'if (' + group(nest(4, c.formatExpr(18) + ')') + line) + '{' + \
+        nest(4, iter_seq(line + s.format() for s in b)) + line + '  } else '
+
+    # FIXME: case when elsebody is empty
+    if self.elsebody:
+      f = f + '{' + nest(4, iter_seq(line + s.format() for s in self.elsebody)) + line + '  }'
+
+    return f
 
 class CDefinition(CStatement):
   @classmethod
@@ -245,7 +271,17 @@ class CDefinition(CStatement):
           iter_seq(joinit(inits, ',' + line)),
           ';')))
 
-
+class CGoto(CStatement):
+  def __init__(self, clabel):
+    assert isinstance(clabel, CLabel)
+    self.clabel = clabel
+  
+  def format(self):
+    f = text('goto')
+    f += nest(2, line + self.clabel.formatExpr(18))
+    f += ';'
+    return group(f)
+  
 class CReturn(CStatement):
   def __init__(self, ret = None):
     assert ret == None or isinstance(ret, CExpression)
