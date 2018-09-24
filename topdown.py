@@ -613,6 +613,18 @@ class TopDownCodeGenerator(CodeGenerator):
     super(TopDownCodeGenerator, self).__init__()
     self.duplicate = {}
   
+  def bound(self, var):
+    # Constants are never considered bound
+    if isinstance(var, Constant):
+      return False
+
+    if isinstance(var, Value):
+      return var in self.value_names and \
+        self.value_names[var] in self.name_type
+    
+    return var in self.name_type
+
+  
   def get_cexp(self, var):
     'Return a CExp referring to this name or value, also considering the type of variable'
 
@@ -841,6 +853,7 @@ def generate_automaton(opts, out):
       for sym,dsts in dfa[current].items():
         for dst in dsts:
           if dst not in marked:
+            marked.add(dst)
             q.append(dst)
     
     stateFunctionBody = []
@@ -904,23 +917,25 @@ def generate_automaton(opts, out):
             sym)
           assert(len(P) > 0), \
             'There should exists at least 1 pattern for symbol {}'.format(sym)
-
+          
           for p in P:
             exprtree = p.src_tree.subtree(coordinate)
             p.cg.value_names[exprtree.expr] = createVar(coordinate)
-            p.cg.bind_value(exprtree.expr)
+            if not p.cg.bound(exprtree.expr):
+              p.cg.bind_value(exprtree.expr)
             for i in range(1, exprtree.numOfChildren() + 1):
               child = exprtree.childAt(i)
               assert(child is not None)
               childpath = list(coordinate)
               childpath.append(i)
               varName = createVar(childpath)
+              ctype = p.cg.value_ctype(child.expr)
               if child.expr not in p.cg.value_names:
                 p.cg.value_names[child.expr] = varName
                 p.cg.duplicate[child.expr] = set()
+                p.cg.bind_name(varName, ctype)
                 p.cg.duplicate[child.expr].add(varName)
               else:
-                ctype = p.cg.value_ctype(child.expr)
                 p.cg.bind_name(varName, ctype)
                 p.cg.duplicate[child.expr].add(varName)
 
