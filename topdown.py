@@ -649,13 +649,20 @@ class TopDownMatchBuilder(MatchBuilder):
       # removed the m_Specific matcher since we don't look for multiple same variables in TD
       self.bound.append(value)
       name = self.manager.get_name(value)
+      # add equivalence condition for duplicates
+      if value in self.manager.duplicate and \
+          name in self.manager.duplicate[value]:
+        dup = self.manager.duplicate[value]
+        dup.remove(name)
+        for d in dup:
+          self.extras.append(CBinExpr('==', CVariable(name), CVariable(d)))
     else:
       # FIXME: if number of duplicates > 2, we're in trouble
       origin_name = self.manager.get_name(value)
       dupl_set = self.manager.duplicate[value] - set([origin_name])
       assert(len(dupl_set) == 1)
       name = list(dupl_set)[0]
-      self.extras.append(CBinExpr('==', self.manager.get_cexp(value), CVariable(name)))
+      #self.extras.append(CBinExpr('==', self.manager.get_cexp(value), CVariable(name)))
 
     return CFunctionCall('m_Value', CVariable(name))
   
