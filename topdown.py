@@ -638,6 +638,124 @@ class TopDownCodeGenerator(CodeGenerator):
       else:
         return CVariable(self.get_name(var))
 
+# Basically a topdown version of the visit_source methods
+class SourceVisitor(object):
+  @staticmethod
+  def visit(manager, tree, coordinate):
+    val = tree.subtree(coordinate).expr
+    if isinstance(val, BinOp):
+      return SourceVisitor.BinOpVisit(manager, tree, coordinate)
+    elif isinstance(val, Icmp):
+      return SourceVisitor.IcmpVisit(manager, tree, coordinate)
+    elif isinstance(val, Select):
+      return SourceVisitor.SelectVisit(manager, tree, coordinate)
+    elif isinstance(val, ConversionOp):
+      return SourceVisitor.ConOpVisit(manager, tree, coordinate)
+    else:
+      # If all else fails, use the default visit_source
+      mb = TopDownMatchBuilder(manager, val)
+      return val.visit_source(mb), mb
+
+  @staticmethod
+  def BinOpVisit(manager, tree, coordinate):
+    st = tree.subtree(coordinate)
+    mb = TopDownMatchBuilder(manager, st.expr)
+    r1_coordinate = copy.deepcopy(coordinate)
+    r2_coordinate = copy.deepcopy(coordinate)
+    r1_coordinate.append(1)
+    r2_coordinate.append(2)
+    r1 = mb.value_emit(st.childAt(1), r1_coordinate)
+    r2 = mb.value_emit(st.childAt(2), r2_coordinate)
+
+    op = BinOp.caps[st.expr.op]
+
+    if 'nsw' in st.expr.flags and 'nuw' in st.expr.flags:
+      return CFunctionCall('match',
+        mb.get_my_ref(),
+        CFunctionCall('m_CombineAnd',
+          CFunctionCall('m_NSW' + op, r1, r2),
+          CFunctionCall('m_NUW' + op,
+            CFunctionCall('m_Value'),
+            CFunctionCall('m_Value')))), mb
+
+    if 'nsw' in st.expr.flags:
+      return mb.simple_match('m_NSW' + op, r1, r2), mb
+
+    if 'nuw' in st.expr.flags:
+      return mb.simple_match('m_NUW' + op, r1, r2), mb
+
+    if 'exact' in st.expr.flags:
+      return CFunctionCall('match',
+        mb.get_my_ref(),
+        CFunctionCall('m_Exact', CFunctionCall('m_' + op, r1, r2))), mb
+
+    return mb.simple_match('m_' + op, r1, r2), mb
+
+  @staticmethod
+  def IcmpVisit(manager, tree, coordinate):
+    st = tree.subtree(coordinate)
+    mb = TopDownMatchBuilder(manager, st.expr)
+    mb_precondition = TopDownMatchBuilder(TopDownCodeGenerator(), st.expr)
+    r1_coordinate = copy.deepcopy(coordinate)
+    r2_coordinate = copy.deepcopy(coordinate)
+    r1_coordinate.append(1)
+    r2_coordinate.append(2)
+    r1 = mb.value_emit(st.childAt(1), r1_coordinate)
+    r2 = mb.value_emit(st.childAt(2), r2_coordinate)
+
+    if st.expr.op == Icmp.Var:
+      opname = st.expr.opname if st.expr.opname else 'Pred ' + st.expr.name
+      name = mb.manager.get_key_name(opname)  #FIXME: call via mb?
+      rp = mb.binding(name, st.expr.PredType)
+
+      return mb.simple_match('m_ICmp', rp, r1, r2), mb
+
+    # Using a new match builder to prevent conflicts between multiple new_name calls
+    # when variable P already exists
+    pvar = mb_precondition.new_name('P')
+    rp = mb_precondition.binding(pvar, st.expr.PredType)
+
+    # Add to normal mb s.t. we can emit the variable itself
+    if not mb.manager.bound(pvar):
+      mb.binding(pvar, st.expr.PredType)
+
+    mb_precondition.extras.append(CBinExpr('==', CVariable(pvar), CVariable(Icmp.op_enum[st.expr.op])))
+    mb.extras.extend(mb_precondition.extras)
+    return mb.simple_match('m_ICmp', rp, r1, r2), mb
+  
+  @staticmethod
+  def SelectVisit(manager, tree, coordinate):
+    st = tree.subtree(coordinate)
+    mb = TopDownMatchBuilder(manager, st.expr)
+    c_coordinate = copy.deepcopy(coordinate)
+    r1_coordinate = copy.deepcopy(coordinate)
+    r2_coordinate = copy.deepcopy(coordinate)
+    c_coordinate.append(1)
+    r1_coordinate.append(2)
+    r2_coordinate.append(3)
+    c = mb.value_emit(st.childAt(1), c_coordinate)
+    r1 = mb.value_emit(st.childAt(2), r1_coordinate)
+    r2 = mb.value_emit(st.childAt(3), r2_coordinate)
+
+    return mb.simple_match('m_Select', c, r1, r2), mb
+  
+  @staticmethod
+  def ConOpVisit(manager, tree, coordinate):
+    st = tree.subtree(coordinate)
+    mb = TopDownMatchBuilder(manager, st.expr)
+    v_coordinate = copy.deepcopy(coordinate)
+    v_coordinate.append(1)
+    r = mb.value_emit(st.childAt(1), v_coordinate)
+
+    if st.expr.op == ConversionOp.ZExtOrTrunc:
+      return CFunctionCall('match',
+        mb.get_my_ref(),
+        CFunctionCall('m_CombineOr',
+          CFunctionCall('m_ZExt', r),
+          CFunctionCall('m_ZTrunc', r)))
+
+    return mb.simple_match(ConversionOp.matcher[st.expr.op], r), mb
+
 class TopDownMatchBuilder(MatchBuilder):
   def subpattern(self, value):
     'Return a CExpr which matches the operand value and binds its variable (top-down version)'
@@ -670,56 +788,31 @@ class TopDownMatchBuilder(MatchBuilder):
     value = tree.expr
 
     assert isinstance(value, (Instr, Input, ConstantVal))
+
     if value not in self.bound:
       self.bound.append(value)
-    name = createVar(current_coordinate)
+      name = createVar(current_coordinate)
+      # add equivalence condition for duplicates
+      if value in self.manager.duplicate and \
+          name in self.manager.duplicate[value]:
+        dup = self.manager.duplicate[value]
+        dup.remove(name)
+        for d in dup:
+          self.extras.append(CBinExpr('==', CVariable(name), CVariable(d)))
+    else:
+      # FIXME: if number of duplicates > 2, we're in trouble
+      origin_name = self.manager.get_name(value)
+      dupl_set = self.manager.duplicate[value] - set([origin_name])
+      assert(len(dupl_set) == 1)
+      name = list(dupl_set)[0]
+    
     return CFunctionCall('m_Value', CVariable(name))
 
   @staticmethod
-  def match_value(value, manager):
-    mb = TopDownMatchBuilder(manager, value)
-    exp = value.visit_source(mb)
-    return exp
+  def match_value(manager, tree, coordinate):
+    ret, mb = SourceVisitor.visit(manager, tree, coordinate)
+    return ret
   
-  @staticmethod
-  def new_match_value(manager, tree, coordinate):
-    st = tree.subtree(coordinate)
-    mb = TopDownMatchBuilder(manager, st.expr)
-
-    if isinstance(st.expr, BinOp):
-      r1_coordinate = copy.deepcopy(coordinate)
-      r2_coordinate = copy.deepcopy(coordinate)
-      r1_coordinate.append(1)
-      r2_coordinate.append(2)
-      r1 = mb.value_emit(st.childAt(1), r1_coordinate)
-      r2 = mb.value_emit(st.childAt(2), r2_coordinate)
-
-      op = BinOp.caps[st.expr.op]
-
-      if 'nsw' in st.expr.flags and 'nuw' in st.expr.flags:
-        return CFunctionCall('match',
-          mb.get_my_ref(),
-          CFunctionCall('m_CombineAnd',
-            CFunctionCall('m_NSW' + op, r1, r2),
-            CFunctionCall('m_NUW' + op,
-              CFunctionCall('m_Value'),
-              CFunctionCall('m_Value'))))
-
-      if 'nsw' in st.expr.flags:
-        return mb.simple_match('m_NSW' + op, r1, r2)
-
-      if 'nuw' in st.expr.flags:
-        return mb.simple_match('m_NUW' + op, r1, r2)
-
-      if 'exact' in st.expr.flags:
-        return CFunctionCall('match',
-          mb.get_my_ref(),
-          CFunctionCall('m_Exact', CFunctionCall('m_' + op, r1, r2)))
-
-      return mb.simple_match('m_' + op, r1, r2)
-    else:
-      return st.expr.visit_source(mb)
-
 def RepresentsInt(s):
     return re.match(r"[-+]?\d+$", s) is not None
 
@@ -727,6 +820,11 @@ def generate_precondition(value, manager):
   mb = TopDownMatchBuilder(manager, value)
   value.visit_source(mb)
   return mb.extras, mb.bound
+
+def new_generate_precondition(manager, tree, coordinate):
+  value = tree.subtree(coordinate)
+  ret, mb = SourceVisitor.visit(manager, tree, coordinate)
+  return mb.extras
 
 def generate_replacement(phopt):
   '''Takes a the peephole optimization for which we
@@ -738,19 +836,26 @@ def generate_replacement(phopt):
   tgt = phopt.target
   tgt_skip = phopt.target_skip
   cg = phopt.cg
+  src_tree = phopt.src_tree
 
   root = local_get_root(src)
-  todo = [root]
   clauses = []
 
+  # This looks weird, but trust me, I know what I'm doing (he said, lying to himself)
+  todo = [[]]
+
   while todo:
-    val = todo.pop()
-    if isinstance(val, Instr):
-      precondition, children = generate_precondition(val, cg)
+    coordinate = todo.pop(0)
+    tree = src_tree.subtree(coordinate)
+    if isinstance(tree.expr, Instr):
+      precondition = new_generate_precondition(cg, src_tree, coordinate)
       clauses.extend(precondition)
-      todo.extend(reversed(children))
-    val.register_types(cg)
-  
+      for i in range(1, tree.numOfChildren() + 1):
+        next_coordinate = copy.deepcopy(coordinate)
+        next_coordinate.append(i)
+        todo.append(next_coordinate)
+    tree.expr.register_types(cg)
+      
   cg.phase = cg.Target
   
   pre.register_types(cg)
@@ -897,7 +1002,8 @@ def generate_automaton(opts, out):
           sink = ddst[0]
         elif RepresentsInt(sym):
           source_tree = list(currentStateAux.patterns)[0].src_tree.subtree(coordinate)
-          ifc_var = CVariable(str(source_tree.expr))
+          #ifc_var = CVariable(str(source_tree.expr))
+          ifc_var = CVariable(sym)
           ifc_subexpr = CFunctionCall('m_SpecificInt', ifc_var)
           ifc = CFunctionCall('match', CVariable(createVar(coordinate)), ifc_subexpr)
           ifb = CGoto(CLabel('state_{}'.format(ddst[0])))
@@ -950,12 +1056,12 @@ def generate_automaton(opts, out):
           pat = list(P)[0]
           source_tree = pat.src_tree.subtree(coordinate)
           cg = pat.cg
-          ifc = TopDownMatchBuilder.new_match_value(cg, pat.src_tree, coordinate)
+          ifc = TopDownMatchBuilder.match_value(cg, pat.src_tree, coordinate)
           #ifc = TopDownMatchBuilder.match_value(source_tree.expr, cg)
           ifb = CGoto(CLabel('state_{}'.format(ddst[0])))
           iflist.append((ifc, [ifb]))
-          for v,n in cg.value_names.items():
-            t = cg.value_ctype(v)
+
+          for n,t in cg.name_type.items():
             if n not in usedVariables:
               usedVariables[n] = t
       
@@ -973,8 +1079,9 @@ def generate_automaton(opts, out):
   out.write('Instruction *InstCombiner::runOnInstruction(Instruction *I) {\n')
   varDecl_it = CDefinition.block((t, CVariable(n)) for n,t in usedVariables.iteritems())
   varDecl = iter_seq(line + d.format() for d in varDecl_it)
-  out.write(varDecl.format() + '\n')
-  out.write('    x = I;\n    goto state_0;\n\n')
+  varNest = nest(2, varDecl)
+  out.write(varNest.format() + '\n')
+  out.write('  x = I;\n  goto state_0;\n\n')
 
   for fn,b in stateFunctions:
     body_iter = (line + s.format() for s in b)
