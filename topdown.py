@@ -792,13 +792,6 @@ class TopDownMatchBuilder(MatchBuilder):
     if value not in self.bound:
       self.bound.append(value)
       name = createVar(current_coordinate)
-      # add equivalence condition for duplicates
-      if value in self.manager.duplicate and \
-          name in self.manager.duplicate[value]:
-        dup = self.manager.duplicate[value]
-        dup.remove(name)
-        for d in dup:
-          self.extras.append(CBinExpr('==', CVariable(name), CVariable(d)))
     else:
       # FIXME: if number of duplicates > 2, we're in trouble
       origin_name = self.manager.get_name(value)
@@ -816,14 +809,14 @@ class TopDownMatchBuilder(MatchBuilder):
 def RepresentsInt(s):
     return re.match(r"[-+]?\d+$", s) is not None
 
-def generate_precondition(value, manager):
-  mb = TopDownMatchBuilder(manager, value)
-  value.visit_source(mb)
-  return mb.extras, mb.bound
-
-def new_generate_precondition(manager, tree, coordinate):
-  value = tree.subtree(coordinate)
+def generate_precondition(manager, tree, coordinate):
   ret, mb = SourceVisitor.visit(manager, tree, coordinate)
+  # add equivalence condition for duplicates
+  for val,dup in mb.manager.duplicate.items():
+    if len(dup) >= 2:
+      name = dup.pop()
+      for d in dup:
+        mb.extras.append(CBinExpr('==', CVariable(name), CVariable(d)))
   return mb.extras
 
 def generate_replacement(phopt):
@@ -848,7 +841,7 @@ def generate_replacement(phopt):
     coordinate = todo.pop(0)
     tree = src_tree.subtree(coordinate)
     if isinstance(tree.expr, Instr):
-      precondition = new_generate_precondition(cg, src_tree, coordinate)
+      precondition = generate_precondition(cg, src_tree, coordinate)
       clauses.extend(precondition)
       for i in range(1, tree.numOfChildren() + 1):
         next_coordinate = copy.deepcopy(coordinate)
@@ -1002,7 +995,6 @@ def generate_automaton(opts, out):
           sink = ddst[0]
         elif RepresentsInt(sym):
           source_tree = list(currentStateAux.patterns)[0].src_tree.subtree(coordinate)
-          #ifc_var = CVariable(str(source_tree.expr))
           ifc_var = CVariable(sym)
           ifc_subexpr = CFunctionCall('m_SpecificInt', ifc_var)
           ifc = CFunctionCall('match', CVariable(createVar(coordinate)), ifc_subexpr)
@@ -1046,18 +1038,14 @@ def generate_automaton(opts, out):
               if child.expr not in p.cg.value_names:
                 p.cg.value_names[child.expr] = varName
                 p.cg.duplicate[child.expr] = set()
-                p.cg.bind_name(varName, ctype)
-                p.cg.duplicate[child.expr].add(varName)
-              else:
-                p.cg.bind_name(varName, ctype)
-                p.cg.duplicate[child.expr].add(varName)
-
+              p.cg.bind_name(varName, ctype)
+              p.cg.duplicate[child.expr].add(varName)
+          
           # Pick any pattern and continue with codegen
           pat = list(P)[0]
           source_tree = pat.src_tree.subtree(coordinate)
           cg = pat.cg
           ifc = TopDownMatchBuilder.match_value(cg, pat.src_tree, coordinate)
-          #ifc = TopDownMatchBuilder.match_value(source_tree.expr, cg)
           ifb = CGoto(CLabel('state_{}'.format(ddst[0])))
           iflist.append((ifc, [ifb]))
 
