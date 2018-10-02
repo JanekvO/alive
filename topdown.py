@@ -602,11 +602,14 @@ class AutomataBuilder(object):
 
 ######################################################
 
-def createVar(path):
-  variable = 'x'
+def createVarUsingPath(var, path):
+  variable = var
   for p in path:
     variable = variable + '_{}'.format(p)
   return variable
+
+def createVar(path):
+  return createVarUsingPath('x', path)
 
 class TopDownCodeGenerator(CodeGenerator):
   def __init__(self):
@@ -712,7 +715,7 @@ class SourceVisitor(object):
 
     # Using a new match builder to prevent conflicts between multiple new_name calls
     # when variable P already exists
-    pvar = mb_precondition.new_name('P')
+    pvar = mb_precondition.new_name(createVarUsingPath('P', coordinate))
     rp = mb_precondition.binding(pvar, st.expr.PredType)
 
     # Add to normal mb s.t. we can emit the variable itself
@@ -780,7 +783,6 @@ class TopDownMatchBuilder(MatchBuilder):
       dupl_set = self.manager.duplicate[value] - set([origin_name])
       assert(len(dupl_set) == 1)
       name = list(dupl_set)[0]
-      #self.extras.append(CBinExpr('==', self.manager.get_cexp(value), CVariable(name)))
 
     return CFunctionCall('m_Value', CVariable(name))
   
@@ -968,7 +970,8 @@ def generate_automaton(opts, out):
     print("current state processed: {}".format(current))
 
     if currentStateAux.accepting:
-      nm = list(currentStateAux.patterns)[0].name
+      originalName = list(currentStateAux.patterns)[0].name
+      nm = originalName
       # Sanitize for graphviz
       sanitize = {' ' : '', ':': '_'}
       for b,a in sanitize.items():
@@ -977,6 +980,8 @@ def generate_automaton(opts, out):
       # TODO: generate the replacement without basically creating pattern matching
       # of the old generator
       clauses,replacement = generate_replacement(list(currentStateAux.patterns)[0])
+      comment = seq('//', originalName)
+      stateFunctionBody.append(comment)
       if clauses:
         cif = CIf(CBinExpr.reduce('&&', clauses), \
           replacement, \
@@ -1000,12 +1005,13 @@ def generate_automaton(opts, out):
           ifc = CFunctionCall('match', CVariable(createVar(coordinate)), ifc_subexpr)
           ifb = CGoto(CLabel('state_{}'.format(ddst[0])))
           iflist.append((ifc, [ifb]))
-        # TODO: add support for overlapping C* variables with differing names
         elif sym is ConstWC:
           P = AutomataBuilder.patternsWithConstWCAt(currentStateAux.patterns, coordinate)
           assert(len(P) > 0), \
             'There should exists at least 1 pattern with const variable'
-          source_tree = list(P)[0].src_tree.subtree(coordinate)
+          body = []
+          pat = list(P)[0]
+          source_tree = pat.src_tree.subtree(coordinate)
           subexpr_str = str(source_tree.expr)
           ifc_var = CVariable(subexpr_str)
           ifc_subexpr = CFunctionCall('m_ConstantInt', ifc_var)
@@ -1015,7 +1021,18 @@ def generate_automaton(opts, out):
             usedVariables[subexpr_str] = ty
           ifc = CFunctionCall('match', CVariable(createVar(coordinate)), ifc_subexpr)
           ifb = CGoto(CLabel('state_{}'.format(ddst[0])))
-          iflist.append((ifc, [ifb]))
+          accountedFor = set()
+          accountedFor.add(subexpr_str)
+          for p in P:
+            pSubtree = p.src_tree.subtree(coordinate)
+            pStr = str(pSubtree.expr)
+            if pStr not in accountedFor:
+              accountedFor.add(pStr)
+              body.append(CAssign(CVariable(pStr), ifc_var))
+              if pStr not in usedVariables:
+                usedVariables[pStr] = ty
+          body.append(ifb)
+          iflist.append((ifc, body))
         else:
           P = AutomataBuilder.patternsWithSymbAt(currentStateAux.patterns, \
             coordinate, \
@@ -1034,7 +1051,8 @@ def generate_automaton(opts, out):
               childpath = list(coordinate)
               childpath.append(i)
               varName = createVar(childpath)
-              ctype = p.cg.value_ctype(child.expr)
+              #ctype = p.cg.value_ctype(child.expr)
+              ctype = CPtrType(CTypeName('Value'))
               if child.expr not in p.cg.value_names:
                 p.cg.value_names[child.expr] = varName
                 p.cg.duplicate[child.expr] = set()
