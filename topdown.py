@@ -364,11 +364,12 @@ def createChooser(choice):
 ######################################################
 
 class StateAuxiliary(object):
-  def __init__(self, prefix, patterns, path=None, accepting=False):
+  def __init__(self, prefix, patterns, path=None, accepting=False, sink=None):
     self.prefix = prefix
     self.patterns = patterns
     self.path = path
     self.accepting = accepting
+    self.sink = sink
 
 ######################################################
 
@@ -570,8 +571,11 @@ class AutomataBuilder(object):
         n = M.pop()
         if self.priority(n) > self.priority(m):
           m = n
+      sink = self.closestDivergingSink(s)
+      if sink is not None:
+        self.automaton.addTransition(Notequal, s, sink)
       # TODO: fix priority
-      self.stateAuxData[s] = StateAuxiliary(copy.deepcopy(e), [m], accepting=True)
+      self.stateAuxData[s] = StateAuxiliary(copy.deepcopy(e), [m], accepting=True, sink=sink)
     else:
       path = self.chooser.makeChoice(e, P)
       self.stateAuxData[s] = StateAuxiliary(e, P, path=path)
@@ -983,9 +987,15 @@ def generate_automaton(opts, out):
       comment = seq('//', originalName)
       stateFunctionBody.append(comment)
       if clauses:
+        # In case the precondition fails, we need to check whether there exists a 
+        # less specific state to fall back on. Note that this implicit transition
+        # is NOT shown in the automaton
+        if currentStateAux.sink is not None:
+          elsebody = [CGoto(CLabel('state_{}'.format(currentStateAux.sink)))]
+        else:
+          elsebody = [CReturn(CVariable('nullptr'))]
         cif = CIf(CBinExpr.reduce('&&', clauses), \
-          replacement, \
-          [CReturn(CVariable('nullptr'))])
+          replacement, elsebody)
         stateFunctionBody.append(cif)
       else:
         stateFunctionBody.extend(replacement)
