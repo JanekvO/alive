@@ -145,10 +145,18 @@ class ExpressionTree(TreeNode):
     self.children = []
     self.populate()
   
+  # FIXME: stop relying on strings for flag matching
   def getSymbol(self):
     s = self.symbol
     if isinstance(self.expr, Icmp):
       s = s + Icmp.opnames[self.expr.op]
+    elif isinstance(self.expr, BinOp):
+      if 'nsw' in self.expr.flags:
+        s = s + 'nsw'
+      if 'nuw' in self.expr.flags:
+        s = s + 'nuw'
+      if 'exact' in self.expr.flags:
+        s = s + 'exact'
     return s
 
   @staticmethod
@@ -224,15 +232,31 @@ ArityLookup = {
   'bitcast' : 1,
   'ret' : 1,
   'add' : 2,
+  'addnsw' : 2,
+  'addnuw' : 2,
+  'addnswnuw' : 2,
   'sub' : 2,
+  'subnsw' : 2,
+  'subnuw' : 2,
+  'subnswnuw' : 2,
   'mul' : 2,
+  'mulnsw' : 2,
+  'mulnuw' : 2,
+  'mulnswnuw' : 2,
   'udiv' : 2,
+  'udivexact' : 2,
   'sdiv' : 2,
+  'sdivexact' : 2,
   'urem' : 2,
   'srem' : 2,
   'shl' : 2,
+  'shlnsw' : 2,
+  'shlnuw' : 2,
+  'shlnswnuw' : 2,
   'ashr' : 2,
+  'ashrexact' : 2,
   'lshr' : 2,
+  'lshrexact' : 2,
   'and' : 2,
   'or' : 2,
   'xor' : 2,
@@ -687,45 +711,41 @@ class SourceVisitor(object):
 
     op = BinOp.caps[st.expr.op]
 
-    # if 'nsw' in st.expr.flags and 'nuw' in st.expr.flags:
-    #   return CFunctionCall('match',
-    #     mb.get_my_ref(),
-    #     CFunctionCall('m_CombineAnd',
-    #       CFunctionCall('m_NSW' + op, r1, r2),
-    #       CFunctionCall('m_NUW' + op,
-    #         CFunctionCall('m_Value'),
-    #         CFunctionCall('m_Value')))), mb
-
-    # if 'nsw' in st.expr.flags:
-    #   return mb.simple_match('m_NSW' + op, r1, r2), mb
-
-    # if 'nuw' in st.expr.flags:
-    #   return mb.simple_match('m_NUW' + op, r1, r2), mb
-
-    # if 'exact' in st.expr.flags:
-    #   return CFunctionCall('match',
-    #     mb.get_my_ref(),
-    #     CFunctionCall('m_Exact', CFunctionCall('m_' + op, r1, r2))), mb
-  
-    #castVar = CVariable(createVarUsingPath('op', coordinate))
-    #castType = CPtrType(CTypeName('auto'))
-    #cast = CDeclaredAssign(castType, castVar, \
-    #  CFunctionCall('dyn_cast<BinaryOperator>', mb.get_my_ref()))
-    cast = CFunctionCall('static_cast<Instruction*>', mb.get_my_ref())
-    nswCheck = CFieldAccess(cast, \
-      'hasNoSignedWrap()', direct=False)
-    nuwCheck = CFieldAccess(cast, \
-      'hasNoUnsignedWrap()', direct=False)
-    exactCheck = CFieldAccess(cast, 'isExact()', direct=False)
-
     if 'nsw' in st.expr.flags and 'nuw' in st.expr.flags:
-      mb.extras.extend([nswCheck, nuwCheck])
-    elif 'nsw' in st.expr.flags:
-      mb.extras.append(nswCheck)
-    elif 'nuw' in st.expr.flags:
-      mb.extras.append(nuwCheck)
-    elif 'exact' in st.expr.flags:
-      mb.extras.append(exactCheck)
+      return CFunctionCall('match',
+        mb.get_my_ref(),
+        CFunctionCall('m_CombineAnd',
+          CFunctionCall('m_NSW' + op, r1, r2),
+          CFunctionCall('m_NUW' + op,
+            CFunctionCall('m_Value'),
+            CFunctionCall('m_Value')))), mb
+
+    if 'nsw' in st.expr.flags:
+      return mb.simple_match('m_NSW' + op, r1, r2), mb
+
+    if 'nuw' in st.expr.flags:
+      return mb.simple_match('m_NUW' + op, r1, r2), mb
+
+    if 'exact' in st.expr.flags:
+      return CFunctionCall('match',
+        mb.get_my_ref(),
+        CFunctionCall('m_Exact', CFunctionCall('m_' + op, r1, r2))), mb
+  
+    # cast = CFunctionCall('static_cast<Instruction*>', mb.get_my_ref())
+    # nswCheck = CFieldAccess(cast, \
+    #   'hasNoSignedWrap()', direct=False)
+    # nuwCheck = CFieldAccess(cast, \
+    #   'hasNoUnsignedWrap()', direct=False)
+    # exactCheck = CFieldAccess(cast, 'isExact()', direct=False)
+
+    # if 'nsw' in st.expr.flags and 'nuw' in st.expr.flags:
+    #   mb.extras.extend([nswCheck, nuwCheck])
+    # elif 'nsw' in st.expr.flags:
+    #   mb.extras.append(nswCheck)
+    # elif 'nuw' in st.expr.flags:
+    #   mb.extras.append(nuwCheck)
+    # elif 'exact' in st.expr.flags:
+    #   mb.extras.append(exactCheck)
 
     return mb.simple_match('m_' + op, r1, r2), mb
 
