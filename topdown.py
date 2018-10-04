@@ -46,6 +46,9 @@ class TreeNode(object):
     for i in range(numOfChildren):
       self.children.append(None)
   
+  def getSymbol(self):
+    return self.symbol
+  
   def nodeType(self):
     pass
   
@@ -60,7 +63,7 @@ class TreeNode(object):
       return True
     # at this point p1 is known to not be a wildcard, p2 being none denotes a 
     # wildcard to be filled in therefore we know it's not subsumed
-    elif p2 is None or p2.symbol is None:
+    elif p2 is None or p2.getSymbol() is None:
       return False
     # if p1 is a constant wildcard (e.g. C, C1, C2, ...), then only true if
     # p2 is either a constant wildcard or constant value (e.g. -1, 1, 2, 3, ...)
@@ -69,15 +72,15 @@ class TreeNode(object):
       return True
     # true if p1 and p2 are (the same) constant values
     elif p1.nodeType() is NodeType.ConstVal and p2.nodeType() is NodeType.ConstVal and \
-          p1.symbol is p2.symbol:
+          p1.getSymbol() == p2.getSymbol():
       return True
     # if both are operations and their symbols match, recurs on their children.
     # if all children of p1 subsume children of p2, return true
     elif p1.nodeType() is NodeType.Operation and p2.nodeType() is NodeType.Operation and \
-          p1.symbol is p2.symbol:
+          p1.getSymbol() == p2.getSymbol():
           p1OperandNum = p1.numOfChildren()
           p2OperandNum = p2.numOfChildren()
-          assert(p1OperandNum is p2OperandNum), "Operation with multiple possible arities is not possible"
+          assert(p1OperandNum == p2OperandNum), "Operation with multiple possible arities is not possible"
           for i in range(1, p1OperandNum + 1):
             if TreeNode.subsumes(p1.childAt(i), p2.childAt(i)) is False:
               return False
@@ -88,8 +91,6 @@ class TreeNode(object):
   
   # self subsumes p if p is an instance of self
   def subsumes(self, p):
-    #self.dump()
-    #p.dump()
     return TreeNode.subsumption(self, p)
   
   def subtreeExists(self, path):
@@ -124,7 +125,7 @@ class TreeNode(object):
   
   def localprint(self, prefix, isLastChild):
     infix = "L-- " if isLastChild is True else "|-- "
-    print(str(prefix) + infix + str(self.symbol))
+    print(str(prefix) + infix + str(self.getSymbol()))
     for i in range(self.numOfChildren(), 1, -1):
       suffix = "    " if isLastChild is True else "|   "
       if self.childAt(i) is not None:
@@ -143,6 +144,12 @@ class ExpressionTree(TreeNode):
     self.expr = instr
     self.children = []
     self.populate()
+  
+  def getSymbol(self):
+    s = self.symbol
+    if isinstance(self.expr, Icmp):
+      s = s + Icmp.opnames[self.expr.op]
+    return s
 
   @staticmethod
   def retrieveOperands(expression):
@@ -159,7 +166,7 @@ class ExpressionTree(TreeNode):
     # This is a pretty stupid way of checking, but checking for an instance of
     # the Select class causes an error
     elif isinstance(expression, Instr) and \
-          expression.getOpName() is 'select':
+          expression.getOpName() == 'select':
       ret.append(expression.c)
       ret.append(expression.v1)
       ret.append(expression.v2)
@@ -229,7 +236,16 @@ ArityLookup = {
   'and' : 2,
   'or' : 2,
   'xor' : 2,
-  'icmp' : 2,
+  'icmpeq' : 2,
+  'icmpne' : 2,
+  'icmpugt' : 2,
+  'icmpuge' : 2,
+  'icmpult' : 2,
+  'icmpule' : 2,
+  'icmpsgt' : 2,
+  'icmpsge' : 2,
+  'icmpslt' : 2,
+  'icmpsle' : 2,
   'select' : 3,
   'br' : 3
 }
@@ -385,18 +401,25 @@ class AutomataBuilder(object):
     return self.count.getNext()
   
   @staticmethod
-  def symbolsAt(path, P, isvar = False):
+  def patternsWithTypesAt(path, P, types):
     F = set()
-    if not isvar:
-      for ph in P:
-        p = ph.src_tree
-        f = p.subtree(path)
-        if f is not None:
-          if f.nodeType() is NodeType.Operation:
-            F.add(f.symbol)
-          elif f.nodeType() is NodeType.ConstVal:
-            F.add(f.symbol)
+    for ph in P:
+      p = ph.src_tree
+      f = p.subtree(path)
+      if f is not None:
+        if f.nodeType() in types:
+          F.add(ph)
     return F
+
+  @staticmethod
+  def symbolsAt(path, P):
+    F = AutomataBuilder.patternsWithTypesAt(path, P, \
+      [NodeType.Operation, NodeType.ConstVal])
+    R = set()
+    for f in F:
+      subtree = f.src_tree.subtree(path)
+      R.add(subtree.getSymbol())
+    return R
 
   # Calculate new P for recursive call, note that the new P is ALWAYS a subset
   # of the old P
@@ -410,51 +433,33 @@ class AutomataBuilder(object):
       # no path exists for p?
       if subp is not None:
         nt = subp.nodeType()
-        if (nt is NodeType.Operation and subp.symbol is f) or \
-            (nt is NodeType.ConstVal and subp.symbol is f):
+        if (nt is NodeType.Operation and subp.getSymbol() == f) or \
+            (nt is NodeType.ConstVal and subp.getSymbol() == f):
           newP.append(ph)
     return newP
-  
+
   @staticmethod
   def patternsWithSymbAt(P, path, symb):
     F = set()
     for ph in P:
       p = ph.src_tree
       f = p.subtree(path)
-      if f is not None and f.symbol is symb:
+      if f is not None and f.getSymbol() == symb:
         F.add(ph)
     return F
 
   @staticmethod
   def patternsWithWCAt(P, path):
-    V = []
-    for ph in P:
-      p = ph.src_tree
-      subt = p.subtree(path)
-      if subt is not None and subt.nodeType() is NodeType.Wildcard:
-        V.append(ph)
-    return V
+    return list(AutomataBuilder.patternsWithTypesAt(path, P, [NodeType.Wildcard]))
 
   @staticmethod
   def patternsWithConstWCAt(P, path):
-    V = []
-    for ph in P:
-      p = ph.src_tree
-      subt = p.subtree(path)
-      if subt is not None and subt.nodeType() is NodeType.ConstWildcard:
-        V.append(ph)
-    return V
+    return list(AutomataBuilder.patternsWithTypesAt(path, P, [NodeType.ConstWildcard]))
 
   @staticmethod
   def patternsWithVariablesAt(P, path):
-    V = []
-    for ph in P:
-      p = ph.src_tree
-      subt = p.subtree(path)
-      if subt is not None and (subt.nodeType() is NodeType.Wildcard or \
-          subt.nodeType() is NodeType.ConstWildcard):
-        V.append(ph)
-    return V
+    return list(AutomataBuilder.patternsWithTypesAt(path, P, \
+      [NodeType.Wildcard, NodeType.ConstWildcard]))
 
   def show(self, filename):
     dfa = self.automaton
@@ -605,6 +610,12 @@ class AutomataBuilder(object):
         self.createAutomaton(str(freshState), eDeepcopy, recursP)
 
 ######################################################
+######################################################
+######################################################
+###############    codegen below    ##################
+######################################################
+######################################################
+######################################################
 
 def createVarUsingPath(var, path):
   variable = var
@@ -746,9 +757,10 @@ class SourceVisitor(object):
     if not mb.manager.bound(pvar):
       mb.binding(pvar, st.expr.PredType)
 
-    mb_precondition.extras.append(CBinExpr('==', CVariable(pvar), CVariable(Icmp.op_enum[st.expr.op])))
-    mb.extras.extend(mb_precondition.extras)
-    return mb.simple_match('m_ICmp', rp, r1, r2), mb
+    matcher = CBinExpr('&&',
+      mb.simple_match('m_ICmp', rp, r1, r2),
+      CBinExpr('==', CVariable(pvar), CVariable(Icmp.op_enum[st.expr.op])))
+    return matcher, mb
   
   @staticmethod
   def SelectVisit(manager, tree, coordinate):
