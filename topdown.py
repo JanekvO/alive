@@ -676,25 +676,45 @@ class SourceVisitor(object):
 
     op = BinOp.caps[st.expr.op]
 
+    # if 'nsw' in st.expr.flags and 'nuw' in st.expr.flags:
+    #   return CFunctionCall('match',
+    #     mb.get_my_ref(),
+    #     CFunctionCall('m_CombineAnd',
+    #       CFunctionCall('m_NSW' + op, r1, r2),
+    #       CFunctionCall('m_NUW' + op,
+    #         CFunctionCall('m_Value'),
+    #         CFunctionCall('m_Value')))), mb
+
+    # if 'nsw' in st.expr.flags:
+    #   return mb.simple_match('m_NSW' + op, r1, r2), mb
+
+    # if 'nuw' in st.expr.flags:
+    #   return mb.simple_match('m_NUW' + op, r1, r2), mb
+
+    # if 'exact' in st.expr.flags:
+    #   return CFunctionCall('match',
+    #     mb.get_my_ref(),
+    #     CFunctionCall('m_Exact', CFunctionCall('m_' + op, r1, r2))), mb
+  
+    #castVar = CVariable(createVarUsingPath('op', coordinate))
+    #castType = CPtrType(CTypeName('auto'))
+    #cast = CDeclaredAssign(castType, castVar, \
+    #  CFunctionCall('dyn_cast<BinaryOperator>', mb.get_my_ref()))
+    cast = CFunctionCall('static_cast<Instruction*>', mb.get_my_ref())
+    nswCheck = CFieldAccess(cast, \
+      'hasNoSignedWrap()', direct=False)
+    nuwCheck = CFieldAccess(cast, \
+      'hasNoUnsignedWrap()', direct=False)
+    exactCheck = CFieldAccess(cast, 'isExact()', direct=False)
+
     if 'nsw' in st.expr.flags and 'nuw' in st.expr.flags:
-      return CFunctionCall('match',
-        mb.get_my_ref(),
-        CFunctionCall('m_CombineAnd',
-          CFunctionCall('m_NSW' + op, r1, r2),
-          CFunctionCall('m_NUW' + op,
-            CFunctionCall('m_Value'),
-            CFunctionCall('m_Value')))), mb
-
-    if 'nsw' in st.expr.flags:
-      return mb.simple_match('m_NSW' + op, r1, r2), mb
-
-    if 'nuw' in st.expr.flags:
-      return mb.simple_match('m_NUW' + op, r1, r2), mb
-
-    if 'exact' in st.expr.flags:
-      return CFunctionCall('match',
-        mb.get_my_ref(),
-        CFunctionCall('m_Exact', CFunctionCall('m_' + op, r1, r2))), mb
+      mb.extras.extend([nswCheck, nuwCheck])
+    elif 'nsw' in st.expr.flags:
+      mb.extras.append(nswCheck)
+    elif 'nuw' in st.expr.flags:
+      mb.extras.append(nuwCheck)
+    elif 'exact' in st.expr.flags:
+      mb.extras.append(exactCheck)
 
     return mb.simple_match('m_' + op, r1, r2), mb
 
