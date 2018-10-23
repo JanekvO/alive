@@ -19,6 +19,7 @@ from language import *
 from parser import parse_llvm, parse_opt_file
 from gen import generate_switched_suite
 from topdown import generate_automaton
+from bottomup import generate_tables
 
 
 def block_model(s, sneg, m):
@@ -491,6 +492,8 @@ def main():
     help='Write generated code to <file> ("-" for stdout)')
   parser.add_argument('-tdo', '--top', type=argparse.FileType('w'), metavar='file',
     help='Write generated top-down code to <file> ("-" for stdout)')
+  parser.add_argument('-buo', '--bot', type=argparse.FileType('w'), metavar='file',
+    help='Write generated bottom-up code to <file> ("-" for stdout)')
   parser.add_argument('--use-array-th', action='store_true', default=False,
     help='Use array theory to encode memory operations (default: False)',
     dest='array_th')
@@ -529,6 +532,9 @@ def main():
 
   if args.top:
     generate_automaton(gen, args.top)
+
+  if args.bot:
+    generate_tables(gen, args.top)
 
 
 if __name__ == "__main__":
