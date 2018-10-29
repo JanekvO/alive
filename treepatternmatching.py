@@ -1,4 +1,5 @@
 from enum import Enum
+import re
 from language import *
 
 # FIXME: Replace these enums with classes considering python 2.7 doesn't
@@ -70,7 +71,18 @@ class TreeNode(object):
   
   def numOfChildren(self):
     return len(self.children)
-  
+
+  def __repr__(self):
+    strbuild = self.getSymbol()
+    if self.numOfChildren() > 0:
+      strbuild = strbuild + '('
+      for i in range (1, self.numOfChildren() + 1):
+        strbuild = strbuild + self.childAt(i).__repr__()
+        if i != self.numOfChildren():
+          strbuild = strbuild + ','
+      strbuild = strbuild + ')'
+    return strbuild
+
   # p1 subsumes p2 if p2 is an instance of p1
   @staticmethod
   def subsumption(p1, p2):
@@ -176,25 +188,26 @@ class TreeNode(object):
         print(prefix + finalInfix + '--- ' + "None")
 
 class ExpressionTree(TreeNode):
-  def __init__(self, instr):
-    self.expr = instr
-    self.children = []
-    self.populate()
+  @staticmethod
+  def retrieveExprType(expr):
+    ret = None
+    if isinstance(expr, Instr):
+      ret = NodeType.Operation
+    elif isinstance(expr, Input):
+      if expr.getName()[0] is 'C':
+        ret = NodeType.ConstWildcard
+      elif expr.getName()[0] is '%':
+        ret = NodeType.Wildcard
+    elif expr.isConst():
+      ret = NodeType.ConstVal
+    elif isinstance(expr, CnstBinaryOp):
+      pass
+    elif isinstance(expr, CnstUnaryOp):
+      pass
+    if ret is None:
+      raise Exception('ExpressionTree\'s type unknown or not implemented yet')
+    return ret
   
-  # FIXME: stop relying on strings for flag matching
-  def getSymbol(self):
-    s = self.symbol
-    if isinstance(self.expr, Icmp):
-      s = s + Icmp.opnames[self.expr.op]
-    elif isinstance(self.expr, BinOp):
-      if 'nsw' in self.expr.flags:
-        s = s + 'nsw'
-      if 'nuw' in self.expr.flags:
-        s = s + 'nuw'
-      if 'exact' in self.expr.flags:
-        s = s + 'exact'
-    return s
-
   @staticmethod
   def retrieveOperands(expression):
     ret = []
@@ -225,39 +238,6 @@ class ExpressionTree(TreeNode):
       return ret
     # TODO: more fitting exception
     raise Exception('Operation does not exist or is not supported yet')
-  
-  def populate(self):
-    nt = self.nodeType()
-    if nt is NodeType.Operation:
-      self.symbol = self.expr.getOpName()
-      ch = ExpressionTree.retrieveOperands(self.expr)
-      for c in ch:
-        self.children.append(ExpressionTree(c))
-    elif nt is NodeType.Wildcard or nt is NodeType.ConstWildcard:
-      self.symbol = self.expr.getName()
-    elif nt is NodeType.ConstVal:
-      # TODO: Don't like refering to class variables directly but I really need the value
-      self.symbol = str(self.expr.val)
-    
-  def nodeType(self):
-    ret = None
-    if isinstance(self.expr, Instr):
-      ret = NodeType.Operation
-    elif isinstance(self.expr, Input):
-      if self.expr.getName()[0] is 'C':
-        ret = NodeType.ConstWildcard
-      elif self.expr.getName()[0] is '%':
-        ret = NodeType.Wildcard
-    elif self.expr.isConst():
-      ret = NodeType.ConstVal
-    elif isinstance(self.expr, CnstBinaryOp):
-      pass
-    elif isinstance(self.expr, CnstUnaryOp):
-      pass
-    if ret is None:
-      raise Exception('ExpressionTree\'s type unknown or not implemented yet')
-    return ret
-
 
 class peepholeoptimization(object):
   def __init__(self, rule, name, pre, source, target, target_skip):
@@ -267,3 +247,6 @@ class peepholeoptimization(object):
     self.source = source
     self.target = target
     self.target_skip = target_skip
+
+def RepresentsInt(s):
+    return re.match(r"[-+]?\d+$", s) is not None

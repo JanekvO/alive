@@ -5,7 +5,7 @@ from value import *
 from automata import *
 from collections import deque
 from precondition import *
-from gen import MatchBuilder, CodeGenerator, minimal_type_constraints
+from gen import MatchBuilder, CodeGenerator, minimal_type_constraints, get_root
 from codegen import *
 from treepatternmatching import *
 
@@ -82,6 +82,42 @@ ArityLookup = {
   'br' : 3
 }
 
+class TDExprTree(ExpressionTree):
+  def __init__(self, instr):
+    self.expr = instr
+    self.children = []
+    self.populate()
+  
+  # FIXME: stop relying on strings for flag matching
+  def getSymbol(self):
+    s = self.symbol
+    if isinstance(self.expr, Icmp):
+      s = s + Icmp.opnames[self.expr.op]
+    elif isinstance(self.expr, BinOp):
+      if 'nsw' in self.expr.flags:
+        s = s + 'nsw'
+      if 'nuw' in self.expr.flags:
+        s = s + 'nuw'
+      if 'exact' in self.expr.flags:
+        s = s + 'exact'
+    return s
+  
+  def populate(self):
+    nt = self.nodeType()
+    if nt is NodeType.Operation:
+      self.symbol = self.expr.getOpName()
+      ch = ExpressionTree.retrieveOperands(self.expr)
+      for c in ch:
+        self.children.append(TDExprTree(c))
+    elif nt is NodeType.Wildcard or nt is NodeType.ConstWildcard:
+      self.symbol = self.expr.getName()
+    elif nt is NodeType.ConstVal:
+      # TODO: Don't like refering to class variables directly but I really need the value
+      self.symbol = str(self.expr.val)
+    
+  def nodeType(self):
+    return ExpressionTree.retrieveExprType(self.expr)
+
 class PrefixTree(TreeNode):
   def __init__(self, symbol, numOfChildren):
     super(PrefixTree, self).__init__(symbol, numOfChildren)
@@ -130,8 +166,8 @@ class TDpeepholeopt(peepholeoptimization):
     super(TDpeepholeopt, self).__init__(rule, name, pre, source, target, target_skip)
     self.cg = TopDownCodeGenerator()
 
-    self.src_tree = ExpressionTree(local_get_root(source))
-    # Not necessary to put target in a ExpressionTree as we don't do any
+    self.src_tree = TDExprTree(local_get_root(source))
+    # Not necessary to put target in a TDExprTree as we don't do any
     # matching on it.
     self.tgt_root = local_get_root(target)
 
@@ -622,9 +658,6 @@ class TopDownMatchBuilder(MatchBuilder):
   def match_value(manager, tree, coordinate):
     ret, mb = SourceVisitor.visit(manager, tree, coordinate)
     return ret
-  
-def RepresentsInt(s):
-    return re.match(r"[-+]?\d+$", s) is not None
 
 def generate_precondition(manager, tree, coordinate):
   ret, mb = SourceVisitor.visit(manager, tree, coordinate)

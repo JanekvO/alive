@@ -520,7 +520,7 @@ def main():
 
     for opt in opts:
       if not args.match or any(pat in opt[0] for pat in args.match):
-        if args.output or args.top:
+        if args.output or args.top or args.bot:
           gen.append(opt)
         if args.verify:
           check_opt(opt, hide_progress=args.hide_progress)
@@ -534,7 +534,7 @@ def main():
     generate_automaton(gen, args.top)
 
   if args.bot:
-    generate_tables(gen, args.top)
+    generate_tables(gen, args.bot)
 
 
 if __name__ == "__main__":

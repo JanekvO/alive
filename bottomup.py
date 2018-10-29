@@ -1,31 +1,78 @@
 from treepatternmatching import *
-from itertools import product
+from itertools import product, izip, count
+from gen import get_root
 
 from pdb import set_trace
 
-class TmpTree(TreeNode):
+DO_STATS = True
+SIMPLIFY = True
+LIMITER = False
+
+class BUpeepholeopt(peepholeoptimization):
+  def __init__(self, rule, name, pre, source, target, target_skip):
+    super(BUpeepholeopt, self).__init__(rule, name, pre, source, target, target_skip)
+    self.src_tree = BUExprTree.createWithExpr(get_root(source))
+    self.tgt_tree = get_root(target)
+
+class BUExprTree(ExpressionTree):
+  def __init__(self, symbol, numChildren):
+    self.symbol = symbol
+    self.children = []
+    self.flags = []
+    self.auxiliaryOp = None
+    for i in range(numChildren):
+      self.children = self.createWC()
+    
+  def getSymbol(self):
+    s = self.symbol
+    if self.symbol == 'icmp':
+      s = s + Icmp.opnames[self.auxiliaryOp]
+    elif self.symbol in BinOp.opids:
+      for f in self.flags:
+        s = s + f
+    return s
+  
+  # Still not a fan of deriving these using the symbol string...
+  # However, symbol string is basically the only information provided from
+  # which we can derive the node type
   def nodeType(self):
-    if self.symbol == '%':
+    if self.getSymbol[0] == 'C':
+      return NodeType.ConstWildcard
+    elif self.getSymbol[0] == '%':
       return NodeType.Wildcard
-    elif self.numOfChildren() == 0:
+    elif self.numOfChildren() > 0:
+      return NodeType.Operation
+    elif RepresentsInt(self.getSymbol):
       return NodeType.ConstVal
     else:
-      return NodeType.Operation
-
-  def __repr__(self):
-    strbuild = self.getSymbol()
-    if self.numOfChildren() > 0:
-      strbuild = strbuild + '('
-      for i in range (1, self.numOfChildren() + 1):
-        strbuild = strbuild + self.childAt(i).__repr__()
-        if i != self.numOfChildren():
-          strbuild = strbuild + ','
-      strbuild = strbuild + ')'
-    return strbuild
+      return None
+  
+  @staticmethod
+  def createWithExpr(expr):
+    tree = BUExprTree.createWC()
+    tree.initializeUsingExpr(expr)
+    return tree
+  
+  def initializeUsingExpr(self, expr):
+    nt = ExpressionTree.retrieveExprType(expr)
+    if nt == NodeType.ConstVal:
+      self.symbol = str(expr.val)
+    elif nt == NodeType.ConstWildcard or nt == NodeType.Wildcard:
+      self.symbol = expr.getName()
+    elif nt == NodeType.Operation:
+      self.symbol = expr.getOpName()
+      if isinstance(expr, Icmp):
+        self.auxiliaryOp = expr.op
+      elif isinstance(expr, BinOp):
+        self.flags = expr.flags
+      children = ExpressionTree.retrieveOperands(expr)
+      self.children = []
+      for c in children:
+        self.children.append(BUExprTree.createWithExpr(c))
 
   @staticmethod
   def createWC():
-    return TmpTree('%', 0)
+    return BUExprTree('%', 0)
   
   def findSimilarTree(self, trees):
     for t in trees:
@@ -56,12 +103,6 @@ class TmpTree(TreeNode):
       if t in intersection:
         intersection.remove(t)
     return intersection
-
-class MatchingSet(object):
-  def __init__(self, state_id, patterns, accepting=None):
-    self.id = state_id
-    self.patterns = patterns
-    self.accepting = accepting
 
 class Tables(object):
   def __init__(self, mapping):
@@ -148,13 +189,13 @@ class TableBuilder(object):
     ret = list()
     if hasWC:
       fs = list()
-      fs.append(TmpTree.createWC())
+      fs.append(BUExprTree.createWC())
       ret.append(fs)
     for p in self.PF:
-      if p.numOfChildren() == 0 and p != TmpTree.createWC():
+      if p.numOfChildren() == 0 and p != BUExprTree.createWC():
         local = list()
         if hasWC:
-          local.append(TmpTree.createWC())
+          local.append(BUExprTree.createWC())
         local.append(p)
         ret.append(local)
     return ret
@@ -181,13 +222,13 @@ class TableBuilder(object):
       for m in MSP:
         withSym = list()
         if hasWC:
-          withSym.append(TmpTree.createWC())
+          withSym.append(BUExprTree.createWC())
         for pair in m:
-          localTree = TmpTree(sym, len(pair))
+          localTree = BUExprTree(sym, len(pair))
           for i in range(1, len(pair) + 1):
             localTree.addChild(pair[i-1], i)
           withSym.append(localTree)
-        intersectResult = TmpTree.intersect(self.PF, withSym)
+        intersectResult = BUExprTree.intersect(self.PF, withSym)
         if not TableBuilder.containsCollection(intersectResult, ret):
           ret.append(intersectResult)
     return ret
@@ -203,7 +244,7 @@ class TableBuilder(object):
     return True
 
   def generateMatchSet(self):
-    wc = TmpTree.createWC()
+    wc = BUExprTree.createWC()
     wildcardInPF = wc.equalsExists(self.PF)
 
     self.iteration.append(self.initIteration(wildcardInPF))
@@ -233,7 +274,7 @@ class TableBuilder(object):
   @staticmethod
   def computeMatchingTuples(MS, mapping):
     ''' Computes list of stateId tuples that subsume match set`s (MS) children. Used to compute which table entries map to MS. '''
-    wc = TmpTree.createWC()
+    wc = BUExprTree.createWC()
     childMapping = list()
     
     # initializing childMappings
@@ -260,7 +301,7 @@ class TableBuilder(object):
 
   @staticmethod
   def retrieveRootedLabel(matchset):
-    wc = TmpTree.createWC()
+    wc = BUExprTree.createWC()
     for t in matchset:
       if t != wc:
         return t.getSymbol()
@@ -312,7 +353,7 @@ class TableBuilder(object):
   def generateTables(self):
     # while there is a lot of overlap with matching set generation
     # I think it's best if table generation and matching set generation are seperated
-    wc = TmpTree.createWC()
+    wc = BUExprTree.createWC()
     wildcardInPF = wc.equalsExists(self.PF)
 
     finalIterIdx = len(self.iteration) - 1
@@ -388,34 +429,39 @@ class TableBuilder(object):
       print('')
 
 def generate_tables(opts, out):
-  trees = list()
-  t1 = TmpTree('A', 2)
-  t1_2 = TmpTree('B', 0)
-  t1_1 = TmpTree('A', 2)
-  t1_1_1 = TmpTree('B', 0)
-  t1_1_2 = TmpTree('%', 0)
-  
-  t1_1.addChild(t1_1_1, 1)
-  t1_1.addChild(t1_1_2, 2)
 
-  t1.addChild(t1_1, 1)
-  t1.addChild(t1_2, 2)
+  #tb = TableBuilder(trees)
+  #tbs = tb.generate()
+  #print(tbs.tables)
 
-  t2 = TmpTree('A', 2)
-  t2_1 = TmpTree('A', 2)
-  t2_2 = TmpTree('C', 0)
-  t2_1_1 = TmpTree('%', 0)
-  t2_1_2 = TmpTree('C', 0)
+  root_opts = defaultdict(list)
+  opts = list(izip(count(1), opts))
 
-  t2_1.addChild(t2_1_1, 1)
-  t2_1.addChild(t2_1_2, 2)
+  # gather names of testcases
+  if DO_STATS:
+    for rule, opt in opts:
+      name = opt[0]
+      # TODO: abstract this
+      src_root = get_root(opt[4]).getOpName()
 
-  t2.addChild(t2_1, 1)
-  t2.addChild(t2_2, 2)
+      # FIXME: sanitize name
+      out.write('STATISTIC(Rule{0}, "{1}.{0}. {2}");\n'.format(rule, src_root, name))
 
-  trees.append(t1)
-  trees.append(t2)
+#   if SIMPLIFY:
+#     out.write('''
+#   if (Value *V = SimplifyInstruction(I, SQ)) {
+#     return replaceInstUsesWith(*I, V);
+#   }
+# ''')
 
-  tb = TableBuilder(trees)
-  tbs = tb.generate()
-  print(tbs.tables)
+  phs = []
+
+  # sort opts by root opcode
+  for rule, opt in opts:
+    root_opts[get_root(opt[4]).getOpName()].append(opt)
+    name, pre, src_bb, tgt_bb, src, tgt, src_used, tgt_used, tgt_skip = opt
+    phs.append(BUpeepholeopt(rule, name, pre, src, tgt, tgt_skip))
+
+  for ph in phs:
+    print(ph.src_tree)
+
