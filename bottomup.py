@@ -21,7 +21,7 @@ class BUExprTree(ExpressionTree):
     self.flags = []
     self.auxiliaryOp = None
     for i in range(numChildren):
-      self.children = self.createWC()
+      self.children.append(self.createWC())
     
   def getSymbol(self):
     s = self.symbol
@@ -36,13 +36,13 @@ class BUExprTree(ExpressionTree):
   # However, symbol string is basically the only information provided from
   # which we can derive the node type
   def nodeType(self):
-    if self.getSymbol[0] == 'C':
+    if self.symbol[0] == 'C':
       return NodeType.ConstWildcard
-    elif self.getSymbol[0] == '%':
+    elif self.symbol[0] == '%':
       return NodeType.Wildcard
     elif self.numOfChildren() > 0:
       return NodeType.Operation
-    elif RepresentsInt(self.getSymbol):
+    elif RepresentsInt(self.symbol):
       return NodeType.ConstVal
     else:
       return None
@@ -73,6 +73,10 @@ class BUExprTree(ExpressionTree):
   @staticmethod
   def createWC():
     return BUExprTree('%', 0)
+
+  @staticmethod
+  def createConstWC():
+    return BUExprTree('C', 0)
   
   def findSimilarTree(self, trees):
     for t in trees:
@@ -159,9 +163,11 @@ class Tables(object):
     return val
 
 class TableBuilder(object):
-  # TODO: change interface for peephole optimizations
-  def __init__(self, trees):
-    self.patterns = trees
+  def __init__(self, peepholeopts):
+    self.peepholeopts = peepholeopts
+    self.patterns = list()
+    for opt in self.peepholeopts:
+      self.patterns.append(opt.src_tree)
     self.PF = self.generatePatternForest(self.patterns)
     self.iteration = list()
   
@@ -185,17 +191,17 @@ class TableBuilder(object):
         return True
     return False
 
-  def initIteration(self, hasWC):
+  def initIteration(self, hasWC, hasConstWC):
     ret = list()
-    if hasWC:
-      fs = list()
-      fs.append(BUExprTree.createWC())
-      ret.append(fs)
     for p in self.PF:
-      if p.numOfChildren() == 0 and p != BUExprTree.createWC():
+      if p.numOfChildren() == 0:
         local = list()
-        if hasWC:
-          local.append(BUExprTree.createWC())
+        WC = BUExprTree.createWC()
+        ConstWC = BUExprTree.createConstWC()
+        if hasWC and p != WC and WC.subsumes(p):
+          local.append(WC)
+        if hasConstWC and p != ConstWC and ConstWC.subsumes(p):
+          local.append(ConstWC)
         local.append(p)
         ret.append(local)
     return ret
@@ -245,9 +251,11 @@ class TableBuilder(object):
 
   def generateMatchSet(self):
     wc = BUExprTree.createWC()
+    cwc = BUExprTree.createConstWC()
     wildcardInPF = wc.equalsExists(self.PF)
+    constWilcardInPF = cwc.equalsExists(self.PF)
 
-    self.iteration.append(self.initIteration(wildcardInPF))
+    self.iteration.append(self.initIteration(wildcardInPF, constWilcardInPF))
 
     while True:
       self.iteration.append(self.iterate(wildcardInPF))
@@ -462,6 +470,6 @@ def generate_tables(opts, out):
     name, pre, src_bb, tgt_bb, src, tgt, src_used, tgt_used, tgt_skip = opt
     phs.append(BUpeepholeopt(rule, name, pre, src, tgt, tgt_skip))
 
-  for ph in phs:
-    print(ph.src_tree)
+  tb = TableBuilder(phs)
+  tables = tb.generate()
 
