@@ -84,6 +84,10 @@ class BUExprTree(ExpressionTree):
         return t
     return None
   
+  # FIXME:  we're basically re-inventing the wheel with these set 
+  #         operations. I.e., implement python set support
+  #         for tree class(es)
+  
   @staticmethod
   def union(*args):
     # Input is multiple iterables containing trees
@@ -107,6 +111,15 @@ class BUExprTree(ExpressionTree):
       if t in intersection:
         intersection.remove(t)
     return intersection
+  
+  @staticmethod
+  def difference(s1, s2):
+    newS1 = list(s1)
+    for t1 in newS1:
+      if t1.equalsExists(s2):
+        newS1.remove(t1)
+        continue
+    return newS1
 
 class Tables(object):
   def __init__(self, mapping):
@@ -310,11 +323,12 @@ class TableBuilder(object):
   @staticmethod
   def retrieveRootedLabel(matchset):
     wc = BUExprTree.createWC()
+    cwc = BUExprTree.createConstWC()
     for t in matchset:
-      if t != wc:
+      if t != wc and t != cwc:
         return t.getSymbol()
     return None
-  
+
   @staticmethod
   def setSubsume(tree, matchset):
     # check if tree subsumes all patterns in matchset
@@ -322,14 +336,14 @@ class TableBuilder(object):
       if tree.isNotComparable(msTree) or not tree.subsumes(msTree):
         return False
     return True
-  
+
   @staticmethod
   def containsTree(tree, collection):
     for c in collection:
       if tree == c:
         return True
     return False
-  
+
   @staticmethod
   def matchSetSubset(MS1, MS2):
     # check if MS1 is a subset of MS2
@@ -340,15 +354,21 @@ class TableBuilder(object):
   
   @staticmethod
   def mostSpecificMatchSet(MS1, MS2):
-    if TableBuilder.matchSetSubset(MS1, MS2):
-      return MS2
-    elif TableBuilder.matchSetSubset(MS2, MS1):
-      return MS1
+    ms1Diff2 = BUExprTree.difference(MS1, MS2)
+    ms2Diff1 = BUExprTree.difference(MS2, MS1)
 
-    for t1 in MS1:
-      if not TableBuilder.setSubsume(t1, MS2):
-        return MS1
-    return MS2
+    # e.g. MS2 = {add(0,%)} and MS1 = {add(0,%), sub(%,%)}
+    if len(ms1Diff2) > len(ms2Diff1) and len(ms2Diff1) == 0:
+      return MS1
+    # e.g. MS1 = {add(0,%)} and MS2 = {add(0,%), sub(%,%)}
+    elif len(ms1Diff2) < len(ms2Diff1) and len(ms1Diff2) == 0:
+      return MS2
+    # e.g. MS1 = {sub(C,*)} and MS2 = {sub(*,*)}
+    else:
+      for t1 in ms1Diff2:
+        if not TableBuilder.setSubsume(t1, ms2Diff1):
+          return MS1
+      return MS2
   
   @staticmethod
   def isComparable(MS1, MS2):
@@ -362,6 +382,7 @@ class TableBuilder(object):
     # while there is a lot of overlap with matching set generation
     # I think it's best if table generation and matching set generation are seperated
     wc = BUExprTree.createWC()
+    cwc = BUExprTree.createConstWC()
     wildcardInPF = wc.equalsExists(self.PF)
 
     finalIterIdx = len(self.iteration) - 1
@@ -375,32 +396,36 @@ class TableBuilder(object):
     
     tables = Tables(stateMapping)
 
+    initialValue = None
+    if wildcardInPF:
+      tmpList = list()
+      tmpList.append(wc)
+      initialValue = tables.getStateId(tmpList)
+
     # Create tables for each label found in matching sets
     for stateId, matchset in stateMapping.items():
       for tree in matchset:
         # If wildcard exists in PF, initialize using state with only the wildcard
-        initialValue = None
-        if wildcardInPF:
-          tmpList = list()
-          tmpList.append(wc)
-          initialValue = tables.getStateId(tmpList)
-        if tree != wc:
+        if tree != wc and tree != cwc:
           tables.addTable(tree.getSymbol(), tree.numOfChildren(), initialValue)
     
     # reduce the match sets in the mapping s.t. only the most specific remain
     reducedStateMapping = dict()
     for stateId,matchset in stateMapping.items():
       reducedStateMapping[stateId] = TableBuilder.reduceMatchSet(matchset)
-
+    
+    # Fill tables
     for stateId,matchset in reducedStateMapping.items():
+      # Fill tables for symbols of arity=0
       for tree in matchset:
-        if tree != wc and tree.numOfChildren() == 0:
+        if tree != wc and tree != cwc and tree.numOfChildren() == 0:
           tables.assignValue(tree.getSymbol(), stateId)
       
       rootLabel = self.retrieveRootedLabel(matchset)
       allowedTuples = TableBuilder.computeMatchingTuples(matchset, reducedStateMapping)
+      allowedList = list(allowedTuples)
 
-      for tupl in allowedTuples:
+      for tupl in allowedList:
         if rootLabel is not None:
           setAtTupl = tables.retrieveValue(rootLabel, *tupl)
           if setAtTupl is not None:
@@ -472,4 +497,12 @@ def generate_tables(opts, out):
 
   tb = TableBuilder(phs)
   tables = tb.generate()
+  for i,ms in tables.mapping.items():
+    print("{}:\t{}".format(i, ms))
+  
+  for f,t in tables.tables.items():
+    print('###########')
+    print(f)
+    print(t)
+  set_trace()
 
