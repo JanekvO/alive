@@ -127,6 +127,18 @@ class Tables(object):
     self.tables = dict()    # function symbol -> n-dimension table
   
   @staticmethod
+  def dimensionCheckWithType(label, collection, ty):
+    dimen = 0
+    val = collection[label]
+    while isinstance(val, ty):
+      val = val[0]
+      dimen = dimen + 1
+    return dimen
+  
+  def dimension(self, label):
+    return Tables.dimensionCheckWithType(label, self.tables, list)
+  
+  @staticmethod
   def initializeTable(dimension, size, initval=None):
     # initializes a table of dimension=dimension with 
     # each dimension having size=size
@@ -174,6 +186,104 @@ class Tables(object):
     for ar in arg:
       val = val[ar]
     return val
+
+# Minimizes tables by taking an intermediate step in terms of table
+# So instead of mapping y1 x y2 x ... x yn to a value we first take the mapping function f of each value which maps to a smaller table
+# i.e. f(y1) x f(y2) x ... x f(yn) which maps to the smaller variant of the smaller table
+class MinimizedTables(Tables):
+  def __init__(self, tablesObj, PF):
+    self.PF = PF
+    self.bigTables = tablesObj
+    self.mapping = tablesObj.mapping
+    self.tableMap = dict()
+    self.tables = dict()
+    self.minimize()
+
+  def dimension(self, label):
+    return Tables.dimensionCheckWithType(label, self.tables, dict)
+
+  def retrieveIntermediateMap(self, label, child, stateId):
+    return self.tableMap[label][child][stateId]
+
+  def retrieveValue(self, label, *arg):
+    val = self.tables[label]
+    child = 1
+    for ar in arg:
+      mappedAr = self.retrieveIntermediateMap(label, child, ar)
+      child = child + 1
+      val = val[mappedAr]
+    return val
+
+  def assignValue(self, label, value, *arg):
+    numArg = len(arg)
+    if numArg == 0:
+      self.tables[label] = value
+      return
+    
+    if label not in self.tables:
+      self.tables[label] = dict()
+
+    val = self.tables[label]
+    for i in range (0, numArg):
+      if arg[i] not in val:
+        val[arg[i]] = dict()
+
+      if i == numArg - 1:
+        val[arg[i]] = value
+      else:
+        val = val[arg[i]]
+  
+  def minimize(self):
+    wc = BUExprTree.createWC()
+    cwc = BUExprTree.createConstWC()
+    childrenSet = dict()
+    for p in self.PF:
+      s = p.getSymbol()
+      if p.numOfChildren() > 0 and s not in childrenSet:
+        childrenSet[s] = dict()
+        self.tableMap[s] = dict()
+        for i in range(1, p.numOfChildren()+1):
+          childrenSet[s][i] = list()
+          self.tableMap[s][i] = list()
+    
+    for p in self.PF:
+      numChildren = p.numOfChildren()
+      s = p.getSymbol()
+      if numChildren == 0 and p != wc and p != cwc:
+        zeroArValue = self.bigTables.retrieveValue(s)
+        self.assignValue(s, zeroArValue)
+      elif numChildren > 0:
+        for i in range(1, p.numOfChildren() + 1):
+          childrenSet[s][i] = BUExprTree.union(childrenSet[s][i], [p.childAt(i)])
+
+    for function,children in childrenSet.items():
+      for i,childSet in children.items():
+        # maps stateId to mapMs
+        representMapping = dict()
+        for stateId,ms in self.mapping.items():
+          mapMs = BUExprTree.intersect(ms, childSet)
+          representId = Tables.stateId(representMapping, mapMs)
+          if representId is not None:
+            mapMsId = representId
+          else:
+            mapMsId = stateId
+            representMapping[stateId] = mapMs
+          self.tableMap[function][i].append(mapMsId)
+    
+    for function,indices in self.tableMap.items():
+      bigTableIndices = list()
+      for sid in indices:
+        bigTableIndices.append(set())
+      
+      for sid,lst in indices.items():
+        for i in lst:
+          bigTableIndices[sid-1].add(i)
+      
+      tableCoordinates = product(*bigTableIndices)
+
+      for coor in tableCoordinates:
+        bigTableValue = self.bigTables.retrieveValue(function, *coor)
+        self.assignValue(function, bigTableValue, *coor)
 
 class TableBuilder(object):
   def __init__(self, peepholeopts):
@@ -269,10 +379,12 @@ class TableBuilder(object):
     constWilcardInPF = cwc.equalsExists(self.PF)
 
     self.iteration.append(self.initIteration(wildcardInPF, constWilcardInPF))
+    print('Initializing:{}'.format(self.iteration[0]))
 
     while True:
       self.iteration.append(self.iterate(wildcardInPF))
       iterlen = len(self.iteration)
+      print('Generating:{}'.format(self.iteration[iterlen-1]))
       if TableBuilder.treeCollectionsEqual(self.iteration[iterlen - 1], self.iteration[iterlen - 2]):
         break
     
@@ -438,7 +550,9 @@ class TableBuilder(object):
   
   def generate(self):
     self.generateMatchSet()
-    return self.generateTables()
+    bigTables = self.generateTables()
+    minimTables = MinimizedTables(bigTables, self.PF)
+    return minimTables
 
   @staticmethod
   def generatePatternForest(patterns):
@@ -455,18 +569,13 @@ class TableBuilder(object):
   
   @staticmethod
   def dumpiter(iteration):
-    for frozenst in iteration:
-      print('frozenset:'),
-      for s in frozenst:
+    for st in iteration:
+      print('set:'),
+      for s in st:
         print(s.getSymbol()),
       print('')
 
 def generate_tables(opts, out):
-
-  #tb = TableBuilder(trees)
-  #tbs = tb.generate()
-  #print(tbs.tables)
-
   root_opts = defaultdict(list)
   opts = list(izip(count(1), opts))
 
@@ -500,9 +609,13 @@ def generate_tables(opts, out):
   for i,ms in tables.mapping.items():
     print("{}:\t{}".format(i, ms))
   
+  for f,t in tables.tableMap.items():
+    print("mapping: {} : {}".format(f, t))
+  
   for f,t in tables.tables.items():
     print('###########')
     print(f)
     print(t)
+    print("dimension of {}: {}".format(f, tables.dimension(f)))
   set_trace()
 
