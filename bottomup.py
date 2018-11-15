@@ -293,7 +293,24 @@ class TableBuilder(object):
       self.patterns.append(opt.src_tree)
     self.PF = self.generatePatternForest(self.patterns)
     self.iteration = list()
-  
+    self.representerSet = dict()
+    self.childSets = dict()
+
+  def createChildSets(self):
+    for p in self.PF:
+      s = p.getSymbol()
+      if p.numOfChildren() > 0 and s not in self.childSets:
+        self.childSets[s] = dict()
+        for i in range(1, p.numOfChildren()+1):
+          self.childSets[s][i] = list()
+
+    for p in self.PF:
+      numChildren = p.numOfChildren()
+      s = p.getSymbol()
+      if numChildren > 0:
+        for i in range(1, p.numOfChildren() + 1):
+          self.childSets[s][i] = BUExprTree.union(self.childSets[s][i], [p.childAt(i)])
+
   @staticmethod
   def areCollectionEqual(collectionA, collectionB):
     # checks if collection of trees are equal
@@ -303,7 +320,7 @@ class TableBuilder(object):
       if not a.equalsExists(collectionB):
         return False
     return True
-  
+
   @staticmethod
   def containsCollection(collecElement, collec):
     # check if list of trees exists in list of list of trees...
@@ -314,8 +331,48 @@ class TableBuilder(object):
         return True
     return False
 
+  @staticmethod
+  def treeCollectionsEqual(treeCollecA, treeCollecB):
+    # Check if collection A contains the same collection of trees as collection B
+    if len(treeCollecA) != len(treeCollecB):
+      return False
+    for a in treeCollecA:
+      if not TableBuilder.containsCollection(a, treeCollecB):
+        return False
+    return True
+
+  @staticmethod
+  def getLastIteration(iterationSet):
+    return iterationSet[len(iterationSet)-1]
+
+  def retrieveSymbols(self):
+    F = dict()
+    for p in self.PF:
+      if p.numOfChildren() > 0 and p.getSymbol() not in F:
+        F[p.getSymbol()] = p
+    return F
+
+  def initRepresenterSet(self):
+    F = self.retrieveSymbols()
+    for sym,tree in F.items():
+      self.representerSet[sym] = dict()
+      for i in range(1, tree.numOfChildren() + 1):
+        self.representerSet[sym][i] = list()
+
+  def updateRepresenterSet(self, iterationSet):
+    F = self.retrieveSymbols()
+    for sym,tree in F.items():
+      for ch in range(1, tree.numOfChildren() + 1):
+        represent = list()
+        for it in iterationSet:
+          intersec = BUExprTree.intersect(self.childSets[sym][ch], it)
+          if not TableBuilder.containsCollection(intersec, represent):
+            represent.append(intersec)
+        self.representerSet[sym][ch].append(represent)
+
   def initIteration(self, hasWC, hasConstWC):
     ret = list()
+    # Initial iteration, only contains symbols of arity 0 after this
     for p in self.PF:
       if p.numOfChildren() == 0:
         local = list()
@@ -327,49 +384,68 @@ class TableBuilder(object):
           local.append(ConstWC)
         local.append(p)
         ret.append(local)
+    # Create sets of patterns that can occur as a child of a particular function
+    self.createChildSets()
+    # Initialize representer sets where the intersection between child set and
+    # iteration set is stored.
+    self.initRepresenterSet()
+    self.updateRepresenterSet(ret)
     return ret
-  
+
+  def tupleAlreadyCovered(self, tup, sym):
+    lastIter = len(self.iteration) - 2
+    if lastIter < 0:
+      return False
+    for i,s in self.representerSet[sym].items():
+      currentSet = s[lastIter]
+      if not TableBuilder.containsCollection(tup[i-1], currentSet):
+        return False
+    # every element in every tuple exists in the representer set of 2 iterations ago
+    # i.e. we already got this scenario covered
+    return True
+
   def iterate(self, hasWC):
     # create dictionary of labels
-    F = dict()
     lastiter = len(self.iteration) - 1
     ret = list(self.iteration[lastiter])
-    for p in self.PF:
-      if p.numOfChildren() > 0 and p.getSymbol() not in F:
-        F[p.getSymbol()] = p
-    
+    F = self.retrieveSymbols()
+
     for sym,tree in F.items():
       MSP = list()
-      numChildren = tree.numOfChildren()
-      R = product(self.iteration[lastiter], repeat=numChildren)
+      representProduct = list()
+      for ch,s in self.representerSet[sym].items():
+        representProduct.append(TableBuilder.getLastIteration(s))
+      # FIXME: what if a set is empty?
+      R = product(*representProduct)
       for r in R:
-        lst = list()
-        for i in r:
-          lst.append(i)
-        MSP.append(list(product(*lst)))
+        # if tuple is already done in one of the previous iterations, we should skip it
+        if not self.tupleAlreadyCovered(r, sym):
+          MSP.append(list(product(*r)))
 
       for m in MSP:
         withSym = list()
         if hasWC:
           withSym.append(BUExprTree.createWC())
-        for pair in m:
-          localTree = BUExprTree(sym, len(pair))
-          for i in range(1, len(pair) + 1):
-            localTree.addChild(pair[i-1], i)
+        for tup in m:
+          localTree = BUExprTree(sym, len(tup))
+          for i in range(1, len(tup) + 1):
+            localTree.addChild(tup[i-1], i)
           withSym.append(localTree)
         intersectResult = BUExprTree.intersect(self.PF, withSym)
         if not TableBuilder.containsCollection(intersectResult, ret):
           ret.append(intersectResult)
+    self.updateRepresenterSet(ret)
     return ret
 
-  @staticmethod
-  def treeCollectionsEqual(treeCollecA, treeCollecB):
-    # Check if collection A contains the same collection of trees as collection B
-    if len(treeCollecA) != len(treeCollecB):
-      return False
-    for a in treeCollecA:
-      if not TableBuilder.containsCollection(a, treeCollecB):
-        return False
+  def isLastIteration(self):
+    F = self.retrieveSymbols()
+    iterlen = len(self.iteration)
+    for sym,tree in F.items():
+      for childidx in range(1, len(self.representerSet[sym]) + 1):
+        if not TableBuilder.treeCollectionsEqual(\
+            self.representerSet[sym][childidx][iterlen-1],
+            self.representerSet[sym][childidx][iterlen-2]):
+          return False
     return True
 
   def generateMatchSet(self):
@@ -385,9 +461,9 @@ class TableBuilder(object):
       self.iteration.append(self.iterate(wildcardInPF))
       iterlen = len(self.iteration)
       print('Generating:{}'.format(self.iteration[iterlen-1]))
-      if TableBuilder.treeCollectionsEqual(self.iteration[iterlen - 1], self.iteration[iterlen - 2]):
+      if self.isLastIteration():
         break
-    
+
   @staticmethod
   def reduceMatchSet(matchset):
     reducedMS = list(matchset)
@@ -401,7 +477,7 @@ class TableBuilder(object):
 
     for rm in toRemove:
       reducedMS.remove(rm)
-    
+
     return reducedMS
 
   @staticmethod
@@ -409,7 +485,7 @@ class TableBuilder(object):
     ''' Computes list of stateId tuples that subsume match set`s (MS) children. Used to compute which table entries map to MS. '''
     wc = BUExprTree.createWC()
     childMapping = list()
-    
+
     # initializing childMappings
     for tree in MS:
       if tree != wc:
@@ -463,7 +539,7 @@ class TableBuilder(object):
       if not TableBuilder.containsTree(t1, MS2):
         return False
     return True
-  
+
   @staticmethod
   def mostSpecificMatchSet(MS1, MS2):
     ms1Diff2 = BUExprTree.difference(MS1, MS2)
