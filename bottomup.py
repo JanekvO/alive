@@ -1,6 +1,7 @@
 from treepatternmatching import *
 from itertools import product, izip, count
 from gen import get_root
+import pickle
 
 from pdb import set_trace
 
@@ -20,7 +21,7 @@ class BUExprTree(ExpressionTree):
     self.children = []
     self.flags = []
     self.auxiliaryOp = None
-    for i in range(numChildren):
+    for i in xrange(numChildren):
       self.children.append(self.createWC())
     
   def getSymbol(self):
@@ -121,11 +122,36 @@ class BUExprTree(ExpressionTree):
         continue
     return newS1
 
-class Tables(object):
+# Minimizes tables by taking an intermediate step in terms of table
+# So instead of mapping y1 x y2 x ... x yn to a value we first take the mapping function f of each value which maps to a smaller table
+# i.e. f(y1) x f(y2) x ... x f(yn) which maps to the smaller variant of the smaller table
+class MinimizedTables(object):
   def __init__(self, mapping):
-    self.mapping = mapping  # int -> matching set
-    self.tables = dict()    # function symbol -> n-dimension table
+    self.mapping = mapping
+    self.tableMap = dict()
+    self.tables = dict()
+    self.defaultInit = None
   
+  def setDefault(self, matchset):
+    self.defaultInit = self.getStateId(matchset)
+  
+  def initializeTable(self, currentElement, currentDepth, children):
+    for ch in children[currentDepth]:
+      newDepth = currentDepth + 1
+      if newDepth == len(children):
+        currentElement[ch] = self.defaultInit
+      else:
+        currentElement[ch] = dict()
+        self.initializeTable(currentElement[ch], newDepth, children)
+
+  def initializeTables(self, usedIndices):
+    for sym,chIndices in usedIndices.items():
+      self.tables[sym] = dict()
+      indices = list()
+      for ch,idcs in chIndices.items():
+        indices.append(idcs)
+      self.initializeTable(self.tables[sym], 0, indices)
+
   @staticmethod
   def dimensionCheckWithType(label, collection, ty):
     dimen = 0
@@ -134,27 +160,13 @@ class Tables(object):
       val = val[0]
       dimen = dimen + 1
     return dimen
-  
+
   def dimension(self, label):
-    return Tables.dimensionCheckWithType(label, self.tables, list)
-  
-  @staticmethod
-  def initializeTable(dimension, size, initval=None):
-    # initializes a table of dimension=dimension with 
-    # each dimension having size=size
-    if dimension == 0:
-      return initval
-    elif dimension > 0:
-      tmp = list()
-      for i in range(size):
-        tmp.append(Tables.initializeTable(dimension-1, size, initval))
-      return tmp
-  
-  def addTable(self, symbol, dimension, initval=None):
-    if symbol not in self.tables:
-      self.tables[symbol] = Tables.initializeTable(dimension, \
-        len(self.mapping), initval)
-  
+    return MinimizedTables.dimensionCheckWithType(label, self.tables, dict)
+
+  def retrieveIntermediateMap(self, label, child, stateId):
+    return self.tableMap[label][child][stateId]
+
   @staticmethod
   def stateId(mapping, matchSet):
     for stateId,ms in mapping.items():
@@ -163,47 +175,10 @@ class Tables(object):
     return None
 
   def getStateId(self, matchSet):
-    return Tables.stateId(self.mapping, matchSet)
+    return MinimizedTables.stateId(self.mapping, matchSet)
   
   def getMatchSet(self, stateId):
     return self.mapping[stateId]
-  
-  def assignValue(self, label, value, *arg):
-    numArg = len(arg)
-    if numArg == 0:
-      self.tables[label] = value
-      return
-
-    val = self.tables[label]
-    for i in range (0, numArg):
-      if i == numArg - 1:
-        val[arg[i]] = value
-      else:
-        val = val[arg[i]]
-  
-  def retrieveValue(self, label, *arg):
-    val = self.tables[label]
-    for ar in arg:
-      val = val[ar]
-    return val
-
-# Minimizes tables by taking an intermediate step in terms of table
-# So instead of mapping y1 x y2 x ... x yn to a value we first take the mapping function f of each value which maps to a smaller table
-# i.e. f(y1) x f(y2) x ... x f(yn) which maps to the smaller variant of the smaller table
-class MinimizedTables(Tables):
-  def __init__(self, tablesObj, PF):
-    self.PF = PF
-    self.bigTables = tablesObj
-    self.mapping = tablesObj.mapping
-    self.tableMap = dict()
-    self.tables = dict()
-    self.minimize()
-
-  def dimension(self, label):
-    return Tables.dimensionCheckWithType(label, self.tables, dict)
-
-  def retrieveIntermediateMap(self, label, child, stateId):
-    return self.tableMap[label][child][stateId]
 
   def retrieveValue(self, label, *arg):
     val = self.tables[label]
@@ -224,7 +199,7 @@ class MinimizedTables(Tables):
       self.tables[label] = dict()
 
     val = self.tables[label]
-    for i in range (0, numArg):
+    for i in xrange (0, numArg):
       if arg[i] not in val:
         val[arg[i]] = dict()
 
@@ -232,58 +207,6 @@ class MinimizedTables(Tables):
         val[arg[i]] = value
       else:
         val = val[arg[i]]
-  
-  def minimize(self):
-    wc = BUExprTree.createWC()
-    cwc = BUExprTree.createConstWC()
-    childrenSet = dict()
-    for p in self.PF:
-      s = p.getSymbol()
-      if p.numOfChildren() > 0 and s not in childrenSet:
-        childrenSet[s] = dict()
-        self.tableMap[s] = dict()
-        for i in range(1, p.numOfChildren()+1):
-          childrenSet[s][i] = list()
-          self.tableMap[s][i] = list()
-    
-    for p in self.PF:
-      numChildren = p.numOfChildren()
-      s = p.getSymbol()
-      if numChildren == 0 and p != wc and p != cwc:
-        zeroArValue = self.bigTables.retrieveValue(s)
-        self.assignValue(s, zeroArValue)
-      elif numChildren > 0:
-        for i in range(1, p.numOfChildren() + 1):
-          childrenSet[s][i] = BUExprTree.union(childrenSet[s][i], [p.childAt(i)])
-
-    for function,children in childrenSet.items():
-      for i,childSet in children.items():
-        # maps stateId to mapMs
-        representMapping = dict()
-        for stateId,ms in self.mapping.items():
-          mapMs = BUExprTree.intersect(ms, childSet)
-          representId = Tables.stateId(representMapping, mapMs)
-          if representId is not None:
-            mapMsId = representId
-          else:
-            mapMsId = stateId
-            representMapping[stateId] = mapMs
-          self.tableMap[function][i].append(mapMsId)
-    
-    for function,indices in self.tableMap.items():
-      bigTableIndices = list()
-      for sid in indices:
-        bigTableIndices.append(set())
-      
-      for sid,lst in indices.items():
-        for i in lst:
-          bigTableIndices[sid-1].add(i)
-      
-      tableCoordinates = product(*bigTableIndices)
-
-      for coor in tableCoordinates:
-        bigTableValue = self.bigTables.retrieveValue(function, *coor)
-        self.assignValue(function, bigTableValue, *coor)
 
 class TableBuilder(object):
   def __init__(self, peepholeopts):
@@ -301,14 +224,14 @@ class TableBuilder(object):
       s = p.getSymbol()
       if p.numOfChildren() > 0 and s not in self.childSets:
         self.childSets[s] = dict()
-        for i in range(1, p.numOfChildren()+1):
+        for i in xrange(1, p.numOfChildren()+1):
           self.childSets[s][i] = list()
 
     for p in self.PF:
       numChildren = p.numOfChildren()
       s = p.getSymbol()
       if numChildren > 0:
-        for i in range(1, p.numOfChildren() + 1):
+        for i in xrange(1, p.numOfChildren() + 1):
           self.childSets[s][i] = BUExprTree.union(self.childSets[s][i], [p.childAt(i)])
 
   @staticmethod
@@ -356,13 +279,13 @@ class TableBuilder(object):
     F = self.retrieveSymbols()
     for sym,tree in F.items():
       self.representerSet[sym] = dict()
-      for i in range(1, tree.numOfChildren() + 1):
+      for i in xrange(1, tree.numOfChildren() + 1):
         self.representerSet[sym][i] = list()
 
   def updateRepresenterSet(self, iterationSet):
     F = self.retrieveSymbols()
     for sym,tree in F.items():
-      for ch in range(1, tree.numOfChildren() + 1):
+      for ch in xrange(1, tree.numOfChildren() + 1):
         represent = list()
         for it in iterationSet:
           intersec = BUExprTree.intersect(self.childSets[sym][ch], it)
@@ -428,7 +351,7 @@ class TableBuilder(object):
           withSym.append(BUExprTree.createWC())
         for tup in m:
           localTree = BUExprTree(sym, len(tup))
-          for i in range(1, len(tup) + 1):
+          for i in xrange(1, len(tup) + 1):
             localTree.addChild(tup[i-1], i)
           withSym.append(localTree)
         intersectResult = BUExprTree.intersect(self.PF, withSym)
@@ -441,7 +364,7 @@ class TableBuilder(object):
     F = self.retrieveSymbols()
     iterlen = len(self.iteration)
     for sym,tree in F.items():
-      for childidx in range(1, len(self.representerSet[sym]) + 1):
+      for childidx in xrange(1, len(self.representerSet[sym]) + 1):
         if not TableBuilder.treeCollectionsEqual(\
             self.representerSet[sym][childidx][iterlen-1],
             self.representerSet[sym][childidx][iterlen-2]):
@@ -469,8 +392,8 @@ class TableBuilder(object):
     reducedMS = list(matchset)
     toRemove = list()
 
-    for i in range(0, len(reducedMS)):
-      for j in range(0, len(reducedMS)):
+    for i in xrange(0, len(reducedMS)):
+      for j in xrange(0, len(reducedMS)):
         if reducedMS[i].subsumes(reducedMS[j]) and i != j:
           toRemove.append(reducedMS[i])
           break
@@ -481,7 +404,7 @@ class TableBuilder(object):
     return reducedMS
 
   @staticmethod
-  def computeMatchingTuples(MS, mapping):
+  def computeMatchingTuples(MS, mapping, usedIndices):
     ''' Computes list of stateId tuples that subsume match set`s (MS) children. Used to compute which table entries map to MS. '''
     wc = BUExprTree.createWC()
     childMapping = list()
@@ -489,21 +412,28 @@ class TableBuilder(object):
     # initializing childMappings
     for tree in MS:
       if tree != wc:
-        for i in range(1, tree.numOfChildren() + 1):
-          childMapping.append(dict(mapping))
+        for i in xrange(1, tree.numOfChildren() + 1):
+          childMapping.append(dict())
         break
+    for tree in MS:
+      if tree != wc:
+        for child,indices in usedIndices.items():
+          for idx in indices:
+            childMapping[child-1][idx] = mapping[idx]
 
     # remove match sets from childMapping that can't possibly map to MS
     for tree in MS:
       if tree != wc:
-        for i in range(1, tree.numOfChildren() + 1):
+        for i in xrange(1, tree.numOfChildren() + 1):
           child = tree.childAt(i)
           for stateId,matchset in childMapping[i-1].items():
             for matchtree in matchset:
-              #if not child.subsumes(matchtree) and not child.unifiesWith(matchtree):
               if not child.subsumes(matchtree) and not (TableBuilder.matchSetSubset({child}, matchset) and len(matchset) > 1):
                 del childMapping[i-1][stateId]
                 break
+            # Can't possibly find a tuple of indices, therefore return the empty generator
+            if len(childMapping[i-1]) == 0:
+              return list()
     
     ret = product(*childMapping)
     return ret
@@ -577,58 +507,102 @@ class TableBuilder(object):
     finalIter = list(self.iteration[finalIterIdx])
 
     stateMapping = dict()
+    usedIndices = dict()
 
     # numbering matching sets to be used for states
-    for i in range(0, len(finalIter)):
+    for i in xrange(0, len(finalIter)):
       stateMapping[i] = finalIter[i]
-    
-    tables = Tables(stateMapping)
 
-    initialValue = None
+    tables = MinimizedTables(stateMapping)
+
     if wildcardInPF:
-      tmpList = list()
-      tmpList.append(wc)
-      initialValue = tables.getStateId(tmpList)
+      tables.setDefault([wc])
 
-    # Create tables for each label found in matching sets
-    for stateId, matchset in stateMapping.items():
-      for tree in matchset:
-        # If wildcard exists in PF, initialize using state with only the wildcard
-        if tree != wc and tree != cwc:
-          tables.addTable(tree.getSymbol(), tree.numOfChildren(), initialValue)
+    # Initialize
+    F = self.retrieveSymbols()
+    for sym,tree in F.items():
+      tables.tableMap[sym] = dict()
+      usedIndices[sym] = dict()
+    for sym,tree in F.items():
+      for ch in xrange(1, tree.numOfChildren() + 1):
+        tables.tableMap[sym][ch] = list()
+        usedIndices[sym][ch] = list()
+
+    # Create table map
+    for sym,tree in F.items():
+      for ch in xrange(1, tree.numOfChildren() + 1):
+        localMSMap = dict()
+        for i,ms in stateMapping.items():
+          # At this point we can safely assume we know the childsets
+          intersect = BUExprTree.intersect(ms, self.childSets[sym][ch])
+          nextStateId = i
+          nextMS = intersect
+          for li,lms in localMSMap.items():
+            if TableBuilder.areCollectionEqual(lms, intersect):
+              nextStateId = li
+              nextMS = lms
+              break
+          tables.tableMap[sym][ch].append(nextStateId)
+          localMSMap[i] = nextMS
+
+    # Reduce the indices to only the used ones
+    for sym,tree in F.items():
+      for ch in xrange(1, tree.numOfChildren() + 1):
+        for idx in tables.tableMap[sym][ch]:
+          if idx not in usedIndices[sym][ch]:
+            usedIndices[sym][ch].append(idx)
     
-    # reduce the match sets in the mapping s.t. only the most specific remain
+    # Initialize minimized tables in tables object
+    tables.initializeTables(usedIndices)
+    
+    # Reduce the match sets in the mapping s.t. only the most specific remain
     reducedStateMapping = dict()
     for stateId,matchset in stateMapping.items():
       reducedStateMapping[stateId] = TableBuilder.reduceMatchSet(matchset)
-    
+
     # Fill tables
     for stateId,matchset in reducedStateMapping.items():
       # Fill tables for symbols of arity=0
       for tree in matchset:
         if tree != wc and tree != cwc and tree.numOfChildren() == 0:
           tables.assignValue(tree.getSymbol(), stateId)
-      
-      rootLabel = self.retrieveRootedLabel(matchset)
-      allowedTuples = TableBuilder.computeMatchingTuples(matchset, reducedStateMapping)
-      allowedList = list(allowedTuples)
 
-      for tupl in allowedList:
-        if rootLabel is not None:
+      rootLabel = self.retrieveRootedLabel(matchset)
+      if rootLabel in usedIndices:
+        allowedTuples = TableBuilder.computeMatchingTuples(matchset, reducedStateMapping, usedIndices[rootLabel])
+
+        for tupl in allowedTuples:
           setAtTupl = tables.retrieveValue(rootLabel, *tupl)
           if setAtTupl is not None:
             msAtTupl = reducedStateMapping[setAtTupl]
             # FIXME: split mostSpecificMatchSet for different cases (i.e. subsumption and subset)
             mostSpecific = TableBuilder.mostSpecificMatchSet(msAtTupl, matchset)
-            tables.assignValue(rootLabel, Tables.stateId(reducedStateMapping, mostSpecific), *tupl)
-      
+            tables.assignValue(rootLabel, MinimizedTables.stateId(reducedStateMapping, mostSpecific), *tupl)
+
     return tables
   
-  def generate(self):
-    self.generateMatchSet()
-    bigTables = self.generateTables()
-    minimTables = MinimizedTables(bigTables, self.PF)
-    return minimTables
+  def generate(self, pickled = False):
+    tbos = 'TableBuilderObject.obj'
+    if not pickled:
+      self.generateMatchSet()
+      fileobj = open(tbos,'wb')
+      pickle.dump(self.patterns, fileobj)
+      pickle.dump(self.PF,fileobj)
+      pickle.dump(self.iteration,fileobj)
+      pickle.dump(self.representerSet,fileobj)
+      pickle.dump(self.childSets,fileobj)
+      fileobj.close()
+    else:
+      fileobj = open(tbos,'rb')
+      self.patterns = pickle.load(fileobj)
+      self.PF = pickle.load(fileobj)
+      self.iteration = pickle.load(fileobj)
+      self.representerSet = pickle.load(fileobj)
+      self.childSets = pickle.load(fileobj)
+      fileobj.close()
+
+    tables = self.generateTables()
+    return tables
 
   @staticmethod
   def generatePatternForest(patterns):
@@ -639,7 +613,7 @@ class TableBuilder(object):
       p = todo.pop()
       if not p.equalsExists(PF):
         PF.add(p)
-      for i in range(1, p.numOfChildren() + 1):
+      for i in xrange(1, p.numOfChildren() + 1):
         todo.add(p.childAt(i))
     return PF
   
@@ -681,7 +655,7 @@ def generate_tables(opts, out):
     phs.append(BUpeepholeopt(rule, name, pre, src, tgt, tgt_skip))
 
   tb = TableBuilder(phs)
-  tables = tb.generate()
+  tables = tb.generate(False)
   for i,ms in tables.mapping.items():
     print("{}:\t{}".format(i, ms))
   
