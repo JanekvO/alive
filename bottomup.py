@@ -23,9 +23,15 @@ class BUExprTree(ExpressionTree):
     self.auxiliaryOp = None
     for i in xrange(numChildren):
       self.children.append(self.createWC())
-    
+
   def getSymbol(self):
-    s = self.symbol
+    if self.nodeType() == NodeType.ConstWildcard:
+      s = 'C'
+    elif self.nodeType() == NodeType.Wildcard:
+      s = '%'
+    else:
+      s = self.symbol
+
     if self.symbol == 'icmp':
       s = s + Icmp.opnames[self.auxiliaryOp]
     elif self.symbol in BinOp.opids:
@@ -126,8 +132,9 @@ class BUExprTree(ExpressionTree):
 # So instead of mapping y1 x y2 x ... x yn to a value we first take the mapping function f of each value which maps to a smaller table
 # i.e. f(y1) x f(y2) x ... x f(yn) which maps to the smaller variant of the smaller table
 class MinimizedTables(object):
-  def __init__(self, mapping):
-    self.mapping = mapping
+  def __init__(self, statemapping, symbolMapping):
+    self.mapping = statemapping
+    self.symMap = symbolMapping
     self.tableMap = dict()
     self.tables = dict()
     self.defaultInit = None
@@ -513,7 +520,7 @@ class TableBuilder(object):
     for i in xrange(0, len(finalIter)):
       stateMapping[i] = finalIter[i]
 
-    tables = MinimizedTables(stateMapping)
+    tables = MinimizedTables(stateMapping, self.retrieveSymbols())
 
     if wildcardInPF:
       tables.setDefault([wc])
@@ -580,26 +587,32 @@ class TableBuilder(object):
             tables.assignValue(rootLabel, MinimizedTables.stateId(reducedStateMapping, mostSpecific), *tupl)
 
     return tables
-  
+
+  def save(self, filename = 'TableBuild.obj'):
+    fileobj = open(filename,'wb')
+    pickle.dump(self.patterns, fileobj)
+    pickle.dump(self.PF,fileobj)
+    pickle.dump(self.iteration,fileobj)
+    pickle.dump(self.representerSet,fileobj)
+    pickle.dump(self.childSets,fileobj)
+    fileobj.close()
+
+  def load(self, filename = 'TableBuild.obj'):
+    fileobj = open(filename,'rb')
+    self.patterns = pickle.load(fileobj)
+    self.PF = pickle.load(fileobj)
+    self.iteration = pickle.load(fileobj)
+    self.representerSet = pickle.load(fileobj)
+    self.childSets = pickle.load(fileobj)
+    fileobj.close()
+
   def generate(self, pickled = False):
     tbos = 'TableBuilderObject.obj'
     if not pickled:
       self.generateMatchSet()
-      fileobj = open(tbos,'wb')
-      pickle.dump(self.patterns, fileobj)
-      pickle.dump(self.PF,fileobj)
-      pickle.dump(self.iteration,fileobj)
-      pickle.dump(self.representerSet,fileobj)
-      pickle.dump(self.childSets,fileobj)
-      fileobj.close()
+      self.save(tbos)
     else:
-      fileobj = open(tbos,'rb')
-      self.patterns = pickle.load(fileobj)
-      self.PF = pickle.load(fileobj)
-      self.iteration = pickle.load(fileobj)
-      self.representerSet = pickle.load(fileobj)
-      self.childSets = pickle.load(fileobj)
-      fileobj.close()
+      self.load(tbos)
 
     tables = self.generateTables()
     return tables
@@ -624,6 +637,104 @@ class TableBuilder(object):
       for s in st:
         print(s.getSymbol()),
       print('')
+
+######################################################
+######################################################
+######################################################
+###############    codegen below    ##################
+######################################################
+######################################################
+######################################################
+
+class BUCodeGenHelper(object):
+  def __init__(self, tables, phs, out):
+    self.tables = tables
+    self.phs = phs
+    self.out = out
+
+  # Emit code that doesn't change regardless of input patterns
+  def emit_constant_code(self):
+    constantStr = \
+    '\n#include \"llvm/ADT/DenseMap.h\"\n\
+#include \"llvm/ADT/Hashing.h\"\n\
+#include <unordered_map>\n\
+#include <array>\n\
+#include <vector>\n\
+\n\
+using llvm::hash_value;\n\
+struct VectorHash {\n\
+  std::size_t operator()(std::vector<unsigned> const& v) const noexcept {\n\
+    llvm::hash_code hv = llvm::hash_value(0);\n\
+    for (auto element : v) {\n\
+      hv = llvm::hash_value(std::make_pair(hv, element));\n\
+    }\n\
+    return hv\n\
+  }\n\
+};\n\n'
+    self.out.write(constantStr)
+  
+  def emit_statemapping(self):
+    startStr = 'static const std::array<std::vector<\
+std::array<unsigned,{}>>,{}> computeTables = {{{{\n'\
+      .format(len(self.tables.mapping), len(self.tables.symMap))
+    endStr = '}};\n\n'
+    mapStr = ''
+    mapLen = len(self.tables.mapping)
+    # Use the order as defined in symMap
+    for sym,tree in self.tables.symMap.items():
+      if tree.numOfChildren() > 0:
+        mapStr = mapStr + '  {{\n'
+        for ch,stateMapping in self.tables.tableMap[sym].items():
+          mapStr = mapStr + '    {{'
+          for i in xrange(mapLen):
+            mapStr = mapStr + str(stateMapping[i])
+            if i != mapLen-1:
+              mapStr = mapStr + ','
+          mapStr = mapStr + '}},\n'
+        mapStr = mapStr + '  }},\n'
+
+    self.out.write(startStr)
+    self.out.write(mapStr)
+    self.out.write(endStr)
+
+  def emit_tables(self):
+    startStr = 'static const std::array<std::unordered_map<std::vector<unsigned>\
+,unsigned,VectorHash>,{}> computeTables = {{{{\n'.format(len(self.tables.symMap))
+    endStr = '}};\n\n'
+    tablStr = ''
+
+    # Again, use the order as defined in symMap
+    for sym,tree in self.tables.symMap.items():
+      if tree.numOfChildren() > 0:
+        tablStr = tablStr + '  {\n'
+        childrenList = list()
+        curChild = self.tables.tables[sym]
+        for i in xrange(tree.numOfChildren()):
+          childList = list()
+          for stateId in curChild:
+            childList.append(stateId)
+          curChild = curChild[stateId]
+          childrenList.append(childList)
+        chCartProd = product(*childrenList)
+
+        for el in chCartProd:
+          value = self.tables.retrieveValue(sym, *el)
+          tablStr = tablStr + '    {'
+          tablStr = tablStr + '{'
+          for ui in el:
+            tablStr = tablStr + str(ui) + ','
+          tablStr = tablStr + '},' + str(value) + '},\n'
+        tablStr = tablStr + '  },\n'
+
+    self.out.write(startStr)
+    self.out.write(tablStr)
+    self.out.write(endStr)
+
+
+  def emit_code(self):
+    self.emit_constant_code()
+    self.emit_statemapping()
+    self.emit_tables()
 
 def generate_tables(opts, out):
   root_opts = defaultdict(list)
@@ -667,5 +778,7 @@ def generate_tables(opts, out):
     print(f)
     print(t)
     print("dimension of {}: {}".format(f, tables.dimension(f)))
-  set_trace()
+  
+  buch = BUCodeGenHelper(tables, phs, out)
+  buch.emit_code()
 
