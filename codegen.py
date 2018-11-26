@@ -201,6 +201,28 @@ class CStatement(CFragment):
   def pprint(self, width=80):
     self.format().pprint(width)
 
+class CSwitchCase(CStatement):
+  def __init__(self, value, cases, default=[]):
+    self.value = value
+    self.cases = cases
+    self.default = default
+
+  def format(self):
+    f = line + 'switch (' + group(nest(2, self.value.formatExpr(18) + ')') + line ) + \
+      '{' + line
+
+    if self.default:
+      f = f + 'default:' + nest(2, iter_seq(line + s.format() for s in self.default) \
+        + line + 'break;') + line
+
+    for v,b in self.cases.items():
+      f = f + 'case ' + group(nest(2, v.formatExpr(18) + ':') + line) + \
+        nest(2, iter_seq(line + s.format() for s in b) + line + 'break;') + line
+
+    f = f + '}' + line
+
+    return f
+
 class CIf(CStatement):
   def __init__(self, condition, then_block, else_block=[]):
     self.condition = condition

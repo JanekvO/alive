@@ -1,6 +1,9 @@
 from treepatternmatching import *
 from itertools import product, izip, count
 from gen import get_root
+from codegen import *
+from gen import llvm_opcode
+from language import Icmp
 import pickle
 
 from pdb import set_trace
@@ -646,6 +649,26 @@ class TableBuilder(object):
 ######################################################
 ######################################################
 
+class SwitchCaseHelp(object):
+  def __init__(self, switchValue):
+    self.switchValue = switchValue
+    self.cases = dict()
+    self.default = []
+
+  def addCase(self, caseValue, code):
+    self.cases[caseValue] = code
+
+  def setDefault(self, code):
+    assert(isinstance(code, list))
+    self.default = code
+
+  def addToDefault(self, code):
+    self.default.append(code)
+
+  def generate(self, codePrepareFunction = None):
+    if codePrepareFunction == None:
+      return CSwitchCase(self.switchValue, self.cases, self.default)
+
 class BUCodeGenHelper(object):
   def __init__(self, tables, phs, out):
     self.tables = tables
@@ -654,29 +677,29 @@ class BUCodeGenHelper(object):
 
   # Emit code that doesn't change regardless of input patterns
   def emit_constant_code(self):
-    constantStr = \
-    '\n#include \"llvm/ADT/DenseMap.h\"\n\
-#include \"llvm/ADT/Hashing.h\"\n\
-#include <unordered_map>\n\
-#include <array>\n\
-#include <vector>\n\
-\n\
-using llvm::hash_value;\n\
-struct VectorHash {\n\
-  std::size_t operator()(std::vector<unsigned> const& v) const noexcept {\n\
-    llvm::hash_code hv = llvm::hash_value(0);\n\
-    for (auto element : v) {\n\
-      hv = llvm::hash_value(std::make_pair(hv, element));\n\
-    }\n\
-    return hv\n\
-  }\n\
-};\n\n'
+    constantStr = '\n' +\
+    '#include \"llvm/ADT/DenseMap.h\"\n' +\
+    '#include \"llvm/ADT/Hashing.h\"\n' +\
+    '#include <unordered_map>\n' +\
+    '#include <array>\n' +\
+    '#include <vector>\n' +\
+    '\n' +\
+    'using llvm::hash_value;\n' +\
+    'struct VectorHash {\n' +\
+    '  std::size_t operator()(std::vector<unsigned> const& v) const noexcept {\n' +\
+    '    llvm::hash_code hv = llvm::hash_value(0);\n' +\
+    '    for (auto element : v) {\n' +\
+    '      hv = llvm::hash_value(std::make_pair(hv, element));\n' +\
+    '    }\n' +\
+    '    return hv\n' +\
+    '  }\n' +\
+    '};\n\n'
     self.out.write(constantStr)
   
   def emit_statemapping(self):
-    startStr = 'static const std::array<std::vector<\
-std::array<unsigned,{}>>,{}> computeTables = {{{{\n'\
-      .format(len(self.tables.mapping), len(self.tables.symMap))
+    startStr = 'static const std::array<std::vector<' +\
+      'std::array<unsigned,{}>>,{}> computeTables = {{{{\n'.format( \
+      len(self.tables.mapping), len(self.tables.symMap))
     endStr = '}};\n\n'
     mapStr = ''
     mapLen = len(self.tables.mapping)
@@ -698,8 +721,9 @@ std::array<unsigned,{}>>,{}> computeTables = {{{{\n'\
     self.out.write(endStr)
 
   def emit_tables(self):
-    startStr = 'static const std::array<std::unordered_map<std::vector<unsigned>\
-,unsigned,VectorHash>,{}> computeTables = {{{{\n'.format(len(self.tables.symMap))
+    startStr = '\n' +\
+      'static const std::array<std::unordered_map<std::vector<unsigned>' +\
+      ',unsigned,VectorHash>,{}> computeTables = {{{{\n'.format(len(self.tables.symMap))
     endStr = '}};\n\n'
     tablStr = ''
 
@@ -730,11 +754,123 @@ std::array<unsigned,{}>>,{}> computeTables = {{{{\n'\
     self.out.write(tablStr)
     self.out.write(endStr)
 
+  PossibleBinopWithFlags = [
+    'add',
+    'sub',
+    'mul',
+    'udiv',
+    'sdiv',
+    'shl',
+    'ashr',
+    'lshr',
+  ]
+
+  PossibleFlags = {
+    'exact' : 0b1,
+    'nuw' : 0b01,
+    'nsw' : 0b10,
+  }
+
+  def emit_exist_mapping(self):
+    mappingExistsStart = '\nstatic bool opcodeMappingExists(const Instruction *I) {\n'
+    mappingExistsEnd = '\n}\n'
+    retTrue = CReturn(CVariable('true'))
+    retFalse = CReturn(CVariable('false'))
+    var = CVariable('I')
+    existsSC = SwitchCaseHelp(var.arr('getOpcode', ''))
+    existsSubSC = dict()
+
+    for sym,tree in self.tables.symMap.items():
+      caseVar = CVariable(llvm_opcode[tree.symbol])
+      if tree.symbol in self.PossibleBinopWithFlags:
+        if tree.symbol not in existsSubSC:
+          existsSubSC[tree.symbol] = SwitchCaseHelp(\
+            var.arr('getRawSubclassOptionalData', ''))
+          existsSubSC[tree.symbol].addToDefault(retFalse)
+        val = 0b00
+        for f in tree.flags:
+          val = val | self.PossibleFlags[f]
+        cVal = CVariable(bin(val))
+        existsSubSC[tree.symbol].addCase(cVal, [retTrue])
+      elif tree.symbol == 'icmp':
+        # FIXME:  Currently doesn't support variable predicates. Are variable
+        #         predicates even used?
+        if tree.symbol not in existsSubSC:
+          existsSubSC[tree.symbol] = SwitchCaseHelp(\
+            var.arr('getPredicate', ''))
+          existsSubSC[tree.symbol].addToDefault(retFalse)
+        cVal = CVariable(Icmp.op_enum[tree.auxiliaryOp])
+        existsSubSC[tree.symbol].addCase(cVal, [retTrue])
+      else:
+        existsSC.addCase(caseVar, [retTrue])
+
+    for c,sw in existsSubSC.items():
+      existsSC.addCase(CVariable(llvm_opcode[c]), [sw.generate()])
+
+    existsSC.addToDefault(retFalse)
+
+    mappingExists = nest(2, existsSC.generate().format())
+
+    self.out.write(mappingExistsStart)
+    self.out.write(mappingExists.format())
+    self.out.write(mappingExistsEnd)
+
+  def emit_mapping(self):
+    mappingStart = '\nstatic unsigned opcodeMapping(const Instruction *I) {\n'
+    mappingEnd = '\n}\n'
+    curMap = 0
+    var = CVariable('I')
+    unreachFunc = CFunctionCall('llvm_unreachable')
+    existsSC = SwitchCaseHelp(var.arr('getOpcode', ''))
+    existsSubSC = dict()
+
+    for sym,tree in self.tables.symMap.items():
+      caseVar = CVariable(llvm_opcode[tree.symbol])
+      cRet = CReturn(CVariable(str(curMap)))
+      if tree.symbol in self.PossibleBinopWithFlags:
+        if tree.symbol not in existsSubSC:
+          existsSubSC[tree.symbol] = SwitchCaseHelp(\
+            var.arr('getRawSubclassOptionalData', ''))
+        val = 0b00
+        for f in tree.flags:
+          val = val | self.PossibleFlags[f]
+        cVal = CVariable(bin(val))
+        existsSubSC[tree.symbol].addCase(cVal, [cRet])
+      elif tree.symbol == 'icmp':
+        # FIXME:  Currently doesn't support variable predicates. Are variable
+        #         predicates even used?
+        if tree.symbol not in existsSubSC:
+          existsSubSC[tree.symbol] = SwitchCaseHelp(\
+            var.arr('getPredicate', ''))
+        cVal = CVariable(Icmp.op_enum[tree.auxiliaryOp])
+        existsSubSC[tree.symbol].addCase(cVal, [cRet])
+      else:
+        existsSC.addCase(caseVar, [cRet])
+      curMap = curMap + 1
+
+    for c,sw in existsSubSC.items():
+      existsSC.addCase(CVariable(llvm_opcode[c]), [sw.generate(), unreachFunc])
+
+    mappingSC = nest(2, seq(existsSC.generate().format(), unreachFunc.format()))
+
+    self.out.write(mappingStart)
+    self.out.write(mappingSC.format())
+    self.out.write(mappingEnd)
 
   def emit_code(self):
     self.emit_constant_code()
     self.emit_statemapping()
     self.emit_tables()
+    self.emit_exist_mapping()
+    self.emit_mapping()
+
+def buildTables(phs):
+  tb = TableBuilder(phs)
+  return tb.generate(False)
+
+def emitCode(tables, phs, out):
+  buch = BUCodeGenHelper(tables, phs, out)
+  buch.emit_code()
 
 def generate_tables(opts, out):
   root_opts = defaultdict(list)
@@ -765,8 +901,8 @@ def generate_tables(opts, out):
     name, pre, src_bb, tgt_bb, src, tgt, src_used, tgt_used, tgt_skip = opt
     phs.append(BUpeepholeopt(rule, name, pre, src, tgt, tgt_skip))
 
-  tb = TableBuilder(phs)
-  tables = tb.generate(False)
+  tables = buildTables(phs)
+
   for i,ms in tables.mapping.items():
     print("{}:\t{}".format(i, ms))
   
@@ -779,6 +915,5 @@ def generate_tables(opts, out):
     print(t)
     print("dimension of {}: {}".format(f, tables.dimension(f)))
   
-  buch = BUCodeGenHelper(tables, phs, out)
-  buch.emit_code()
+  emitCode(tables, phs, out)
 
