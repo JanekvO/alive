@@ -693,7 +693,11 @@ class BUCodeGenHelper(object):
     '    }\n' +\
     '    return hv\n' +\
     '  }\n' +\
-    '};\n\n'
+    '};\n\n' +\
+    'static unsigned retrieveStateValue(Value *V, DenseMap<Value*,unsigned> &sa);\n' +\
+    'static unsigned retrieveStateValue(ConstantInt *C);\n' +\
+    'static unsigned retrieveStateValue(Instruction *I, DenseMap<Value*,unsigned> &sa);\n' +\
+    '\n'
     self.out.write(constantStr)
   
   def emit_statemapping(self):
@@ -784,8 +788,10 @@ class BUCodeGenHelper(object):
       caseVar = CVariable(llvm_opcode[tree.symbol])
       if tree.symbol in self.PossibleBinopWithFlags:
         if tree.symbol not in existsSubSC:
+          rhs = var.arr('getRawSubclassOptionalData', '')
+          lhs = CVariable('0b11')
           existsSubSC[tree.symbol] = SwitchCaseHelp(\
-            var.arr('getRawSubclassOptionalData', ''))
+            CBinExpr('&', rhs, lhs))
           existsSubSC[tree.symbol].addToDefault(retFalse)
         val = 0b00
         for f in tree.flags:
@@ -829,8 +835,10 @@ class BUCodeGenHelper(object):
       cRet = CReturn(CVariable(str(curMap)))
       if tree.symbol in self.PossibleBinopWithFlags:
         if tree.symbol not in existsSubSC:
+          rhs = var.arr('getRawSubclassOptionalData', '')
+          lhs = CVariable('0b11')
           existsSubSC[tree.symbol] = SwitchCaseHelp(\
-            var.arr('getRawSubclassOptionalData', ''))
+            CBinExpr('&', rhs, lhs))
         val = 0b00
         for f in tree.flags:
           val = val | self.PossibleFlags[f]
@@ -856,6 +864,89 @@ class BUCodeGenHelper(object):
     self.out.write(mappingStart)
     self.out.write(mappingSC.format())
     self.out.write(mappingEnd)
+  
+  def emit_retrieveStateValue_ConstantInt(self):
+    start = '\nstatic unsigned retrieveStateValue(ConstantInt *C) {\n'
+    end = '\n}\n'
+    cwc = BUExprTree.createConstWC()
+    cGetVal = CVariable('C').arr('getValue','').dot('getZExtValue','')
+    switchCase = SwitchCaseHelp(cGetVal)
+
+    for idState,ms in self.tables.mapping.items():
+      caseCode = CReturn(CVariable(str(idState)))
+      if TableBuilder.matchSetSubset([cwc], ms):
+        reducedms = TableBuilder.reduceMatchSet(ms)
+        if TableBuilder.areCollectionEqual(reducedms, [cwc]):
+          switchCase.setDefault([caseCode])
+        else:
+          assert(len(reducedms) == 1),'Reduced matchset should not '
+          caseValue = CVariable(str(reducedms[0]))
+          switchCase.addCase(caseValue, [caseCode])
+
+    switchCaseCode = nest(2, switchCase.generate().format())
+
+    self.out.write(start)
+    self.out.write(switchCaseCode.format())
+    self.out.write(end)
+
+  def emit_retrieveStateValue_InstMap(self):
+    start = '\nstatic unsigned retrieveStateValue(Instruction *I, ' +\
+      'DenseMap<Value*,unsigned> &sa) {\n'
+    end = '}\n'
+
+    assert(self.tables.defaultInit is not None), \
+      'No wildcard not supported yet for bottom-up matching'
+    
+    body = '  std::vector<unsigned> operandMS;\n' +\
+    '  if(!I || !opcodeMappingExists(I))\n' +\
+    '    return {};\n'.format(self.tables.defaultInit) +\
+    '  for (Value *op : I->operands()) {\n' +\
+    '    unsigned ms = {};\n'.format(self.tables.defaultInit) +\
+    '    if(!sa.count(op)) {\n' +\
+    '      ms = retrieveStateValue(op, sa);\n' +\
+    '      sa.insert(std::make_pair(op, ms));\n' +\
+    '    } else {\n' +\
+    '      ms = sa[op];\n' +\
+    '    }\n' +\
+    '    unsigned mappedValue = computeMap[opcodeMapping(I)]' +\
+      '[operandMS.size()][ms];\n' +\
+    '    operandMS.push_back(mappedValue);\n' +\
+    '  }\n' +\
+    '  auto computeTable = computeTables[opcodeMapping(I)];\n' +\
+    '  return computeTable[operandMS];\n'
+
+    self.out.write(start)
+    self.out.write(body)
+    self.out.write(end)
+
+  def emit_retrieveStateValue_ValMap(self):
+    start = '\nstatic unsigned retrieveStateValue(Value *V, ' +\
+      'DenseMap<Value*, unsigned> &sa) {\n'
+    end = '\n}\n'
+    vVar = CVariable('V')
+    saVar = CVariable('sa')
+
+    isaConstCall = CFunctionCall('isa<ConstantInt>', vVar)
+    isaInstCall = CFunctionCall('isa<Instruction>', vVar)
+    ConstIntCast = CFunctionCall('cast<ConstantInt>', vVar)
+    InstCast = CFunctionCall('cast<Instruction>', vVar)
+    ConstIntRet = CReturn(CFunctionCall('retrieveStateValue', ConstIntCast))
+    InstRet = CReturn(CFunctionCall('retrieveStateValue', InstCast, saVar))
+
+    ifList = [
+      (isaConstCall, [ConstIntRet]),
+      (isaInstCall, [InstRet])
+    ]
+
+    elseBody = [CReturn(CVariable(str(self.tables.defaultInit)))] \
+      if self.tables.defaultInit is not None else []
+    cifelse = CElseIf(ifList, elseBody)
+
+    cifelseCode = cifelse.format()
+
+    self.out.write(start)
+    self.out.write(cifelseCode.format())
+    self.out.write(end)
 
   def emit_code(self):
     self.emit_constant_code()
@@ -863,6 +954,9 @@ class BUCodeGenHelper(object):
     self.emit_tables()
     self.emit_exist_mapping()
     self.emit_mapping()
+    self.emit_retrieveStateValue_ConstantInt()
+    self.emit_retrieveStateValue_InstMap()
+    self.emit_retrieveStateValue_ValMap()
 
 def buildTables(phs):
   tb = TableBuilder(phs)

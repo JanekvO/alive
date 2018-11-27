@@ -250,11 +250,13 @@ class CElseIf(CStatement):
     for case in self.iflist:
       c,b = case
       f = f + 'if (' + group(nest(4, c.formatExpr(18) + ')') + line) + '{' + \
-        nest(4, iter_seq(line + s.format() for s in b)) + line + '  } else '
+        nest(4, iter_seq(line + s.format() for s in b)) + line + '  }'
+      if case != self.iflist[-1]:
+        f = f + ' else '
 
-    # FIXME: case when elsebody is empty
     if self.elsebody:
-      f = f + '{' + nest(4, iter_seq(line + s.format() for s in self.elsebody)) + line + '  }'
+      f = f + ' else {' + nest(4, iter_seq(line + s.format() \
+        for s in self.elsebody)) + line + '  }'
 
     return f
 
