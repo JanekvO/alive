@@ -1,9 +1,11 @@
 from treepatternmatching import *
+from bottomuptree import *
 from itertools import product, izip, count
 from gen import get_root
 from codegen import *
 from gen import llvm_opcode
 from language import Icmp
+from bottomupprec import *
 import pickle
 
 from pdb import set_trace
@@ -15,121 +17,12 @@ LIMITER = False
 class BUpeepholeopt(peepholeoptimization):
   def __init__(self, rule, name, pre, source, target, target_skip):
     super(BUpeepholeopt, self).__init__(rule, name, pre, source, target, target_skip)
-    self.src_tree = BUExprTree.createWithExpr(get_root(source))
-    self.tgt_tree = get_root(target)
-
-class BUExprTree(ExpressionTree):
-  def __init__(self, symbol, numChildren):
-    self.symbol = symbol
-    self.children = []
-    self.flags = []
-    self.auxiliaryOp = None
-    for i in xrange(numChildren):
-      self.children.append(self.createWC())
-
-  def getSymbol(self):
-    if self.nodeType() == NodeType.ConstWildcard:
-      s = 'C'
-    elif self.nodeType() == NodeType.Wildcard:
-      s = '%'
-    else:
-      s = self.symbol
-
-    if self.symbol == 'icmp':
-      s = s + Icmp.opnames[self.auxiliaryOp]
-    elif self.symbol in BinOp.opids:
-      for f in self.flags:
-        s = s + f
-    return s
-  
-  # Still not a fan of deriving these using the symbol string...
-  # However, symbol string is basically the only information provided from
-  # which we can derive the node type
-  def nodeType(self):
-    if self.symbol[0] == 'C':
-      return NodeType.ConstWildcard
-    elif self.symbol[0] == '%':
-      return NodeType.Wildcard
-    elif self.numOfChildren() > 0:
-      return NodeType.Operation
-    elif RepresentsInt(self.symbol):
-      return NodeType.ConstVal
-    else:
-      return None
-  
-  @staticmethod
-  def createWithExpr(expr):
-    tree = BUExprTree.createWC()
-    tree.initializeUsingExpr(expr)
-    return tree
-  
-  def initializeUsingExpr(self, expr):
-    nt = ExpressionTree.retrieveExprType(expr)
-    if nt == NodeType.ConstVal:
-      self.symbol = str(expr.val)
-    elif nt == NodeType.ConstWildcard or nt == NodeType.Wildcard:
-      self.symbol = expr.getName()
-    elif nt == NodeType.Operation:
-      self.symbol = expr.getOpName()
-      if isinstance(expr, Icmp):
-        self.auxiliaryOp = expr.op
-      elif isinstance(expr, BinOp):
-        self.flags = expr.flags
-      children = ExpressionTree.retrieveOperands(expr)
-      self.children = []
-      for c in children:
-        self.children.append(BUExprTree.createWithExpr(c))
-
-  @staticmethod
-  def createWC():
-    return BUExprTree('%', 0)
-
-  @staticmethod
-  def createConstWC():
-    return BUExprTree('C', 0)
-  
-  def findSimilarTree(self, trees):
-    for t in trees:
-      if t == self:
-        return t
-    return None
-  
-  # FIXME:  we're basically re-inventing the wheel with these set 
-  #         operations. I.e., implement python set support
-  #         for tree class(es)
-  
-  @staticmethod
-  def union(*args):
-    # Input is multiple iterables containing trees
-    unionized = list()
-    for it in args:
-      for element in it:
-        if not element.equalsExists(unionized):
-          unionized.append(element)
-    return unionized
-  
-  @staticmethod
-  def intersect(*args):
-    # Input is multiple iterables containing trees
-    intersection = list(args[0])
-    toRemove = list()
-    for it in args:
-      for element in intersection:
-        if not element.equalsExists(it):
-          toRemove.append(element)
-    for t in toRemove:
-      if t in intersection:
-        intersection.remove(t)
-    return intersection
-  
-  @staticmethod
-  def difference(s1, s2):
-    newS1 = list(s1)
-    for t1 in newS1:
-      if t1.equalsExists(s2):
-        newS1.remove(t1)
-        continue
-    return newS1
+    self.src_root = get_root(source)
+    self.tgt_root = get_root(target)
+    self.pred = BUBoolPred.predToBUPred(pre)
+    self.src_tree = BUExprTree.createWithExpr(self.src_root)
+    self.tgt_tree = BUExprTree.createWithExpr(self.tgt_root)
+    self.src_tree.setRelatedRule(rule)
 
 # Minimizes tables by taking an intermediate step in terms of table
 # So instead of mapping y1 x y2 x ... x yn to a value we first take the mapping function f of each value which maps to a smaller table
@@ -656,7 +549,17 @@ class SwitchCaseHelp(object):
     self.default = []
 
   def addCase(self, caseValue, code):
-    self.cases[caseValue] = code
+    self.cases[tuple(caseValue)] = code
+
+  def addToExistingCase(self, existing, addition):
+    for case in self.cases:
+      if existing in case:
+        lst = list(case)
+        lst.append(addition)
+        newtup = tuple(lst)
+        self.cases[newtup] = self.cases[case]
+        del self.cases[case]
+        break
 
   def setDefault(self, code):
     assert(isinstance(code, list))
@@ -758,16 +661,16 @@ class BUCodeGenHelper(object):
     self.out.write(tablStr)
     self.out.write(endStr)
 
-  PossibleBinopWithFlags = [
-    'add',
-    'sub',
-    'mul',
-    'udiv',
-    'sdiv',
-    'shl',
-    'ashr',
-    'lshr',
-  ]
+  PossibleBinopWithFlags = {
+    'add' : 0b11,
+    'sub' : 0b11,
+    'mul' : 0b11,
+    'udiv' : 0b1,
+    'sdiv' : 0b1,
+    'shl' : 0b11,
+    'ashr' : 0b1,
+    'lshr' : 0b1,
+  }
 
   PossibleFlags = {
     'exact' : 0b1,
@@ -789,7 +692,7 @@ class BUCodeGenHelper(object):
       if tree.symbol in self.PossibleBinopWithFlags:
         if tree.symbol not in existsSubSC:
           rhs = var.arr('getRawSubclassOptionalData', '')
-          lhs = CVariable('0b11')
+          lhs = CVariable(bin(self.PossibleBinopWithFlags[tree.symbol]))
           existsSubSC[tree.symbol] = SwitchCaseHelp(\
             CBinExpr('&', rhs, lhs))
           existsSubSC[tree.symbol].addToDefault(retFalse)
@@ -797,7 +700,7 @@ class BUCodeGenHelper(object):
         for f in tree.flags:
           val = val | self.PossibleFlags[f]
         cVal = CVariable(bin(val))
-        existsSubSC[tree.symbol].addCase(cVal, [retTrue])
+        existsSubSC[tree.symbol].addCase([cVal], [retTrue])
       elif tree.symbol == 'icmp':
         # FIXME:  Currently doesn't support variable predicates. Are variable
         #         predicates even used?
@@ -806,12 +709,12 @@ class BUCodeGenHelper(object):
             var.arr('getPredicate', ''))
           existsSubSC[tree.symbol].addToDefault(retFalse)
         cVal = CVariable(Icmp.op_enum[tree.auxiliaryOp])
-        existsSubSC[tree.symbol].addCase(cVal, [retTrue])
+        existsSubSC[tree.symbol].addCase([cVal], [retTrue])
       else:
-        existsSC.addCase(caseVar, [retTrue])
+        existsSC.addCase([caseVar], [retTrue])
 
     for c,sw in existsSubSC.items():
-      existsSC.addCase(CVariable(llvm_opcode[c]), [sw.generate()])
+      existsSC.addCase([CVariable(llvm_opcode[c])], [sw.generate()])
 
     existsSC.addToDefault(retFalse)
 
@@ -836,14 +739,14 @@ class BUCodeGenHelper(object):
       if tree.symbol in self.PossibleBinopWithFlags:
         if tree.symbol not in existsSubSC:
           rhs = var.arr('getRawSubclassOptionalData', '')
-          lhs = CVariable('0b11')
+          lhs = CVariable(bin(self.PossibleBinopWithFlags[tree.symbol]))
           existsSubSC[tree.symbol] = SwitchCaseHelp(\
             CBinExpr('&', rhs, lhs))
         val = 0b00
         for f in tree.flags:
           val = val | self.PossibleFlags[f]
         cVal = CVariable(bin(val))
-        existsSubSC[tree.symbol].addCase(cVal, [cRet])
+        existsSubSC[tree.symbol].addCase([cVal], [cRet])
       elif tree.symbol == 'icmp':
         # FIXME:  Currently doesn't support variable predicates. Are variable
         #         predicates even used?
@@ -851,13 +754,13 @@ class BUCodeGenHelper(object):
           existsSubSC[tree.symbol] = SwitchCaseHelp(\
             var.arr('getPredicate', ''))
         cVal = CVariable(Icmp.op_enum[tree.auxiliaryOp])
-        existsSubSC[tree.symbol].addCase(cVal, [cRet])
+        existsSubSC[tree.symbol].addCase([cVal], [cRet])
       else:
-        existsSC.addCase(caseVar, [cRet])
+        existsSC.addCase([caseVar], [cRet])
       curMap = curMap + 1
 
     for c,sw in existsSubSC.items():
-      existsSC.addCase(CVariable(llvm_opcode[c]), [sw.generate(), unreachFunc])
+      existsSC.addCase([CVariable(llvm_opcode[c])], [sw.generate(), unreachFunc])
 
     mappingSC = nest(2, seq(existsSC.generate().format(), unreachFunc.format()))
 
@@ -881,7 +784,7 @@ class BUCodeGenHelper(object):
         else:
           assert(len(reducedms) == 1),'Reduced matchset should not '
           caseValue = CVariable(str(reducedms[0]))
-          switchCase.addCase(caseValue, [caseCode])
+          switchCase.addCase([caseValue], [caseCode])
 
     switchCaseCode = nest(2, switchCase.generate().format())
 
@@ -948,6 +851,41 @@ class BUCodeGenHelper(object):
     self.out.write(cifelseCode.format())
     self.out.write(end)
 
+  def emit_runOnInst(self):
+    start = 'Instruction *InstCombiner::runOnInstruction(Instruction*I, ' +\
+      'DenseMap<Value*,unsigned> &sa) {\n'
+    end = '}\n'
+
+    mapping = self.tables.mapping
+    exprToMatchsets = dict()
+    switchCase = SwitchCaseHelp(CVariable('tableValue'))
+    defaultCode = [CReturn(CVariable('nullptr'))]
+    switchCase.setDefault(defaultCode)
+
+    for stateId,ms in mapping.items():
+      red = TableBuilder.reduceMatchSet(ms)
+      for t in red:
+        if t.relatedRuleId is not None:
+          if t not in exprToMatchsets:
+            exprToMatchsets[t] = list()
+          exprToMatchsets[t].append(stateId)
+
+    cur = 1
+    for e,ms in exprToMatchsets.items():
+      transformHelper = TransformationHelper(e, self.phs)
+      gen = transformHelper.generateTransformation()
+      caseVar = []
+      for i in ms:
+        caseVar.append(CVariable(i))
+      switchCase.addCase(caseVar, gen)
+      cur = cur + 1
+
+    switchCaseCode = nest(2, switchCase.generate().format())
+
+    self.out.write(start)
+    self.out.write(switchCaseCode.format())
+    self.out.write(end)
+
   def emit_code(self):
     self.emit_constant_code()
     self.emit_statemapping()
@@ -957,6 +895,369 @@ class BUCodeGenHelper(object):
     self.emit_retrieveStateValue_ConstantInt()
     self.emit_retrieveStateValue_InstMap()
     self.emit_retrieveStateValue_ValMap()
+    self.emit_runOnInst()
+
+class EquivalenceGenerator(object):
+  def __init__(self, manager, tree):
+    self.tree = tree
+    self.manager = manager
+    self.bound = {}
+
+  def processSubtree(self, path):
+    subtree = self.tree.subtree(path)
+    var = createVar(path)
+
+    assert(len(subtree.name) > 0)
+
+    if subtree.name not in self.bound:
+      self.bound[subtree.name] = [var]
+    else:
+      self.bound[subtree.name].append(var)
+
+  def equivalenceCode(self):
+    eqclauses = []
+    for st,lst in self.bound.items():
+      lstlen = len(lst)
+      if lstlen >= 2:
+        for i in xrange(1, lstlen):
+          e1 = lst[i-1]
+          e2 = lst[i]
+          eqclauses.append(CBinExpr('==', CVariable(e1), CVariable(e2)))
+    return eqclauses
+
+class TransformationHelper(object):
+  binop = ['add', 'sub', 'mul', 'udiv', 'sdiv', 'urem', 'srem', 'shl', 'ashr',
+           'lshr', 'and', 'or', 'xor']
+  convop = ['trunc', 'zext', 'sext', 'ZExtOrTrunc', 'ptrtoint',
+            'inttoptr', 'bitcast']
+
+  def __init__(self, tree, phs):
+    self.tree = tree
+    self.phs = phs
+    self.cgm = CodeGeneratorManager()
+    self.eg = EquivalenceGenerator(self.cgm, tree)
+
+  # Blatantly copy-pasted from gen.py
+  @staticmethod
+  def minimal_type_constraints(ty_exp, required, guaranteed):
+    if isinstance(required, BUIntType):
+      if not isinstance(guaranteed, BUIntType):
+        if required.defined:
+          return [CFunctionCall('isa<IntegerType>', ty_exp),
+            CBinExpr('==',
+              ty_exp.arr('getScalarSizeInBits', []),
+              CVariable(str(required.size)))]
+
+        return [CFunctionCall('isa<IntegerType>', ty_exp)]
+
+      if required.defined and not guaranteed.defined:
+        return [CBinExpr('==',
+          ty_exp.arr('getScalarSizeInBits', []),
+          CVariable(str(required.size)))]
+
+      return []
+
+    if isinstance(required, BUPtrType):
+      if not isinstance(guaranteed, BUPtrType):
+        raise AliveError("Pointer types not supported")
+
+      return []
+
+    if isinstance(required, BUArrayType):
+      raise AliveError("Array types not supported")
+
+    assert(isinstance(required, BUUnknownType))
+
+    reqs = required.types.keys()
+    reqs.sort()
+
+    guars = guaranteed.types.keys()
+    guars.sort()
+
+    if reqs == [Type.Int, Type.Ptr] and Type.Array in guars:
+      return [CVariable('<int-or-ptr>')]
+
+    return []
+
+  def generateTransformation(self):
+    rule = self.tree.relatedRuleId
+    clauses = []
+    todo = [[]]
+
+    while todo:
+      coordinate = todo.pop(0)
+      tree = self.tree.subtree(coordinate)
+      if tree.numOfChildren() > 0:
+        for i in range(1, tree.numOfChildren() + 1):
+          next_coor = copy.deepcopy(coordinate)
+          next_coor.append(i)
+          todo.append(next_coor)
+      self.cgm.bind_tree(tree, coordinate)
+      self.eg.processSubtree(coordinate)
+      tree.register_types(self.cgm)
+
+    self.cgm.phase = self.cgm.Target
+
+    pred = self.phs[rule].pred
+    pred.register_types(self.cgm)
+
+    for name in self.cgm.named_types:
+      self.cgm.unify(*self.cgm.named_types[name])
+
+    tgt_tree = self.phs[rule].tgt_tree
+
+    todo = [[]]
+
+    while todo:
+      coordinate = todo.pop(0)
+      tree = tgt_tree.subtree(coordinate)
+      if tree.numOfChildren() > 0:
+        for i in range(1, tree.numOfChildren() + 1):
+          next_coor = copy.deepcopy(coordinate)
+          next_coor.append(i)
+          todo.append(next_coor)
+      tree.register_types(self.cgm)
+
+    self.cgm.unify(self.tree, tgt_tree)
+    self.cgm.value_names[tgt_tree] = tgt_tree.name
+    self.cgm.bind_name(tgt_tree.name, self.cgm.value_ctype(tgt_tree))
+
+    for v,t in self.cgm.guaranteed.iteritems():
+      if not self.cgm.bound(v): continue
+      clauses.extend(self.minimal_type_constraints(\
+        self.cgm.get_llvm_type(v), \
+        self.cgm.required[v], \
+        t))
+
+    if not isinstance(pred, BUTruePred):
+      clauses.append(pred.visitPrecondition(self.cgm))
+
+    if DO_STATS and LIMITER:
+      clauses.append(CBinExpr('<', CVariable('Rule' + str(rule)), CVariable('10000')))
+
+    body = []
+
+    if DO_STATS:
+      body = [CUnaryExpr('++', CVariable('Rule' + str(rule)))]
+
+    todo = [[]]
+
+    while todo:
+      coordinate = todo.pop(0)
+      tree = tgt_tree.subtree(coordinate)
+      if tree.numOfChildren() > 0:
+        for i in range(1, tree.numOfChildren() + 1):
+          next_coor = copy.deepcopy(coordinate)
+          next_coor.append(i)
+          todo.append(next_coor)
+      nt = tree.nodeType()
+      if tree != tgt_tree and nt == NodeType.Operation:
+        body.extend(tree.targetVisit(coordinate, self.cgm, True))
+
+    if isinstance(tgt_tree, BUCopyOperand):
+      body.append(
+        CDefinition.init(
+          self.cgm.PtrInstruction,
+          self.cgm.get_cexp(tgt_tree),
+          CFunctionCall('replaceInstUsesWith', \
+            CVariable('*I'), \
+            self.cgm.get_cexp(tgt_tree.childAt(1)))))
+    else:
+      body.extend(tgt_tree.targetVisit([], self.cgm, False))
+
+    body.append(CReturn(self.cgm.get_cexp(tgt_tree)))
+
+    clauses.extend(self.eg.equivalenceCode())
+
+    if clauses:
+      cif = CIf(CBinExpr.reduce('&&', clauses), body, [CReturn(CVariable('nullptr'))])
+      return [cif]
+    else:
+      return body
+
+    # cif = CIf(CBinExpr.reduce('&&', clauses), body).format()
+
+    # decl_it = CDefinition.block((t, CVariable(v))
+    #   for v,t in cg.name_type.iteritems() if v != 'I')
+    # decl = iter_seq(line + d.format() for d in decl_it)
+
+    # code = nest(2,
+    #   seq(line, '{ // ', name,
+    #       nest(2, seq(decl, line, line, cif)), line, '}'))
+
+    # out.write(code.format())
+
+# Not inheriting the CG in gen.py since we don't have the old expression
+# and we don't care about source part matching since that's covered by the
+# BU tree pattern matcher
+class CodeGeneratorManager(object):
+  Initialization, Target = range(2)
+
+  PtrConstantInt = CPtrType(CTypeName('ConstantInt'))
+  PtrValue = CPtrType(CTypeName('Value'))
+  PtrInstruction = CPtrType(CTypeName('Instruction'))
+
+  def __init__(self):
+    self.usedVariables = dict()
+    self.value_names = {} # value -> name
+    self.key_names = {}   # key -> name
+    self.names = set()    # all created names
+    self.name_type = {}   # name -> ctype
+    self.reps = {}        # value -> value
+    self.required = {}    # value -> type
+    self.guaranteed = {}  # value -> type
+    self.named_types = defaultdict(set)
+    self.phase = self.Initialization
+    self.clauses = []
+
+  # As derived from get_most_specific_type in gen.py.
+  @staticmethod
+  def get_most_specific_BUtype(t1, t2):
+    if isinstance(t1, BUUnknownType):
+      if isinstance(t2, BUIntType):
+        return CodeGeneratorManager.get_most_specific_BUtype(t1.types[Type.Int], t2)
+      elif isinstance(t2, BUPtrType):
+        return CodeGeneratorManager.get_most_specific_BUtype(t1.types[Type.Ptr], t2)
+      elif isinstance(t2, BUArrayType):
+        return CodeGeneratorManager.get_most_specific_BUtype(t1.types[Type.Array], t2)
+
+      types = [(s, CodeGeneratorManager.get_most_specific_BUtype(t, t2.types[s]))
+        for (s,t) in t1.types.iteritems() if s in t2.types]
+
+      assert(len(types))
+
+      if len(types) == 1:
+        return types[0][1]
+
+      retTy = BUUnknownType()
+      retTy.types = dict(types)
+      return retTy
+
+    if isinstance(t2, BUUnknownType):
+      return CodeGeneratorManager.get_most_specific_BUtype(t2, t1)
+
+    assert(t1.__class__ == t2.__class__)
+    if isinstance(t1, BUIntType):
+      if t1.defined:
+        return t1
+      else:
+        return t2
+
+    if isinstance(t1, BUPtrType):
+      return BUPtrType(CodeGeneratorManager.get_most_specific_BUtype(t1.type, t2.type))
+
+    # Not sure how to interpret the order of types when talking about arraytype
+    if isinstance(t1, BUArrayType):
+      return t1
+
+    assert(False)
+
+  # Retrieves the tree whose type is unified with the input tree's.
+  def get_rep(self, tree):
+    if tree not in self.reps:
+      self.reps[tree] = None
+    rep = self.reps[tree]
+    if not isinstance(rep, BUExprTree) and rep == None:
+      return tree
+    rep = self.get_rep(self.reps[tree])
+    self.reps[tree] = rep
+    return rep
+
+  def get_llvm_type(self, tree):
+    rep = self.get_rep(tree)
+    assert(self.bound(rep))
+    return self.get_cexp(rep).arr('getType', [])
+
+  @staticmethod
+  def value_ctype(tree):
+    if tree.nodeType() == NodeType.ConstWildcard:
+      return CodeGeneratorManager.PtrConstantInt
+    else:
+      return CodeGeneratorManager.PtrValue
+
+  def get_cexp(self, var):
+    if var.nodeType() == NodeType.ConstVal or \
+        var.nodeType() == NodeType.ConstOperation:
+      return var.get_Value(self)
+    elif var.nodeType() == NodeType.ConstWildcard:
+      return CVariable(var)
+    elif var in self.value_names:
+      name = self.value_names[var]
+      return CVariable(name)
+    else:
+      return CVariable(var)
+
+  def get_ctype(self, name):
+    return self.name_type[name]
+
+  def bound(self, var):
+    if isinstance(var, BUExprTree):
+      return var in self.value_names and \
+        self.value_names[var] in self.name_type
+    return var in self.name_type
+
+  def bind_tree(self, tree, path):
+    cty = self.value_ctype(tree)
+    name = createVar(path)
+    self.value_names[tree] = name
+    self.bind_name(name, cty)
+
+  def bind_name(self, name, ctype):
+    assert name not in self.name_type
+    assert isinstance(name, str)
+    assert name not in self.names
+
+    self.names.add(name)
+    self.name_type[name] = ctype
+
+  def register_type(self, tree, actual, minimal):
+    rep = self.get_rep(tree)
+    if isinstance(actual, BUNameType):
+      self.named_types[actual.type].add(rep)
+      actual = actual.type
+    if isinstance(minimal, BUNameType):
+      minimal = minimal.type
+
+    actual = self.get_most_specific_BUtype(actual, minimal)
+    if rep in self.required:
+      self.required[rep] = self.get_most_specific_BUtype(actual, self.required[rep])
+    else:
+      self.required[rep] = actual
+
+    if self.phase == self.Initialization:
+      if rep in self.guaranteed:
+        self.guaranteed[rep] = self.get_most_specific_BUtype(minimal, self.guaranteed[rep])
+      else:
+        self.guaranteed[rep] = minimal
+
+  def unify(self, *trees):
+    it = iter(trees)
+    v1 = it.next()
+    r1 = self.get_rep(v1)
+
+    for v2 in it:
+      r2 = self.get_rep(v2)
+      if r1 is r2:
+        continue
+
+      if self.phase == self.Target and self.bound(r1) and self.bound(r2):
+        self.clauses.append(
+          CBinExpr('==', self.get_llvm_type(r1), self.get_llvm_type(r2)))
+
+      if self.bound(r2) and not self.bound(r1):
+        r1, r2 = r2, r1
+
+      self.reps[r2] = r1
+
+      if r2 in self.required:
+        self.required[r1] = self.get_most_specific_BUtype\
+          (self.required[r1], self.required[r2])
+        del self.required[r2]
+
+      if r2 in self.guaranteed:
+        self.guaranteed[r1] = self.get_most_specific_BUtype\
+          (self.guaranteed[r1], self.guaranteed[r2])
+        del self.guaranteed[r2]
 
 def buildTables(phs):
   tb = TableBuilder(phs)
@@ -968,7 +1269,7 @@ def emitCode(tables, phs, out):
 
 def generate_tables(opts, out):
   root_opts = defaultdict(list)
-  opts = list(izip(count(1), opts))
+  opts = list(izip(count(), opts))
 
   # gather names of testcases
   if DO_STATS:

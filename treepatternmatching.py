@@ -9,6 +9,7 @@ class NodeType(Enum):
   ConstWildcard = 2
   Wildcard = 3
   Operation = 4
+  ConstOperation = 5
 
 # General methods for patterns
 class PatternHelper(object):
@@ -55,6 +56,15 @@ class PatternHelper(object):
   def patternsWithVariablesAt(P, path):
     return list(PatternHelper.patternsWithTypesAt(path, P, \
       [NodeType.Wildcard, NodeType.ConstWildcard]))
+
+def createVarUsingPath(var, path):
+  variable = var
+  for p in path:
+    variable = variable + '_{}'.format(p)
+  return variable
+
+def createVar(path):
+  return createVarUsingPath('x', path)
 
 class TreeNode(object):
   def __init__(self, symbol, numOfChildren):
@@ -104,8 +114,9 @@ class TreeNode(object):
       return True
     # if both are operations and their symbols match, recurs on their children.
     # if all children of p1 subsume children of p2, return true
-    elif p1.nodeType() is NodeType.Operation and p2.nodeType() is NodeType.Operation and \
-          p1.getSymbol() == p2.getSymbol():
+    elif ((p1.nodeType() is NodeType.Operation and p2.nodeType() is NodeType.Operation) or \
+          (p1.nodeType() is NodeType.ConstOperation and p2.nodeType() is NodeType.ConstOperation)) and \
+            p1.getSymbol() == p2.getSymbol():
           p1OperandNum = p1.numOfChildren()
           p2OperandNum = p2.numOfChildren()
           assert(p1OperandNum == p2OperandNum), "Operation with multiple possible arities is not possible"
@@ -201,10 +212,13 @@ class ExpressionTree(TreeNode):
     elif expr.isConst():
       ret = NodeType.ConstVal
     elif isinstance(expr, CnstBinaryOp):
-      pass
+      ret = NodeType.ConstOperation
     elif isinstance(expr, CnstUnaryOp):
-      pass
+      ret = NodeType.ConstOperation
+    elif isinstance(expr, CnstFunction):
+      ret = NodeType.ConstOperation
     if ret is None:
+      print(expr)
       raise Exception('ExpressionTree\'s type unknown or not implemented yet')
     return ret
   
@@ -212,11 +226,13 @@ class ExpressionTree(TreeNode):
   def retrieveOperands(expression):
     ret = []
     if isinstance(expression, ConversionOp) or \
-        isinstance(expression, CopyOperand):
+        isinstance(expression, CopyOperand) or \
+        isinstance(expression, CnstUnaryOp):
       ret.append(expression.v)
       return ret
     elif isinstance(expression, BinOp) or \
-          isinstance(expression, Icmp):
+          isinstance(expression, Icmp) or \
+          isinstance(expression, CnstBinaryOp):
       ret.append(expression.v1)
       ret.append(expression.v2)
       return ret
@@ -235,6 +251,10 @@ class ExpressionTree(TreeNode):
       return ret
     elif isinstance(expression, Ret):
       ret.append(expression.val)
+      return ret
+    elif isinstance(expression, CnstFunction):
+      for arg in expression.args:
+        ret.append(arg)
       return ret
     # TODO: more fitting exception
     raise Exception('Operation does not exist or is not supported yet')

@@ -215,9 +215,10 @@ class CSwitchCase(CStatement):
       f = f + 'default:' + nest(2, iter_seq(line + s.format() for s in self.default) \
         + line + 'break;') + line
 
-    for v,b in self.cases.items():
-      f = f + 'case ' + group(nest(2, v.formatExpr(18) + ':') + line) + \
-        nest(2, iter_seq(line + s.format() for s in b) + line + 'break;') + line
+    for vals,b in self.cases.items():
+      for v in vals:
+        f = f + 'case ' + group(nest(2, v.formatExpr(18) + ':') + line)
+      f = f + nest(2, iter_seq(line + s.format() for s in b) + line + 'break;') + line
 
     f = f + '}' + line
 

@@ -436,15 +436,6 @@ class AutomataBuilder(object):
 ######################################################
 ######################################################
 
-def createVarUsingPath(var, path):
-  variable = var
-  for p in path:
-    variable = variable + '_{}'.format(p)
-  return variable
-
-def createVar(path):
-  return createVarUsingPath('x', path)
-
 class TopDownCodeGenerator(CodeGenerator):
   def __init__(self):
     super(TopDownCodeGenerator, self).__init__()
