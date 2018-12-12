@@ -99,6 +99,14 @@ class CVariable(CExpression):
   def formatExpr(self, prec=0):
     return text(self.name)
 
+class CCharArray(CExpression):
+  def __init__(self, string):
+    assert(string, str)
+    self.string = string
+
+  def formatExpr(self, prec=0):
+    return text('\"' + self.string + '\"')
+
 class CFunctionCall(CExpression):
   def __init__(self, fun, *args):
     self.fun = fun
@@ -212,13 +220,13 @@ class CSwitchCase(CStatement):
       '{' + line
 
     if self.default:
-      f = f + 'default:' + nest(2, iter_seq(line + s.format() for s in self.default) \
-        + line + 'break;') + line
+      f = f + 'default: {' + nest(2, iter_seq(line + s.format() for s in self.default) \
+        + line + 'break;' + line + '}') + line
 
     for vals,b in self.cases.items():
       for v in vals:
         f = f + 'case ' + group(nest(2, v.formatExpr(18) + ':') + line)
-      f = f + nest(2, iter_seq(line + s.format() for s in b) + line + 'break;') + line
+      f = f + seq('{', nest(2, iter_seq(line + s.format() for s in b) + line + 'break;' + line + '}') + line)
 
     f = f + '}' + line
 

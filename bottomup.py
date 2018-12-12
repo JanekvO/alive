@@ -594,7 +594,7 @@ class BUCodeGenHelper(object):
     '    for (auto element : v) {\n' +\
     '      hv = llvm::hash_value(std::make_pair(hv, element));\n' +\
     '    }\n' +\
-    '    return hv\n' +\
+    '    return hv;\n' +\
     '  }\n' +\
     '};\n\n' +\
     'static unsigned retrieveStateValue(Value *V, DenseMap<Value*,unsigned> &sa);\n' +\
@@ -605,7 +605,7 @@ class BUCodeGenHelper(object):
   
   def emit_statemapping(self):
     startStr = 'static const std::array<std::vector<' +\
-      'std::array<unsigned,{}>>,{}> computeTables = {{{{\n'.format( \
+      'std::array<unsigned,{}>>,{}> computeMap = {{{{\n'.format( \
       len(self.tables.mapping), len(self.tables.symMap))
     endStr = '}};\n\n'
     mapStr = ''
@@ -692,14 +692,14 @@ class BUCodeGenHelper(object):
       if tree.symbol in self.PossibleBinopWithFlags:
         if tree.symbol not in existsSubSC:
           rhs = var.arr('getRawSubclassOptionalData', '')
-          lhs = CVariable(bin(self.PossibleBinopWithFlags[tree.symbol]))
+          lhs = CVariable(hex(self.PossibleBinopWithFlags[tree.symbol]))
           existsSubSC[tree.symbol] = SwitchCaseHelp(\
             CBinExpr('&', rhs, lhs))
           existsSubSC[tree.symbol].addToDefault(retFalse)
         val = 0b00
         for f in tree.flags:
           val = val | self.PossibleFlags[f]
-        cVal = CVariable(bin(val))
+        cVal = CVariable(hex(val))
         existsSubSC[tree.symbol].addCase([cVal], [retTrue])
       elif tree.symbol == 'icmp':
         # FIXME:  Currently doesn't support variable predicates. Are variable
@@ -729,7 +729,7 @@ class BUCodeGenHelper(object):
     mappingEnd = '\n}\n'
     curMap = 0
     var = CVariable('I')
-    unreachFunc = CFunctionCall('llvm_unreachable')
+    unreachFunc = CFunctionCall('llvm_unreachable', CCharArray('Function should not be called manually.'))
     existsSC = SwitchCaseHelp(var.arr('getOpcode', ''))
     existsSubSC = dict()
 
@@ -739,13 +739,13 @@ class BUCodeGenHelper(object):
       if tree.symbol in self.PossibleBinopWithFlags:
         if tree.symbol not in existsSubSC:
           rhs = var.arr('getRawSubclassOptionalData', '')
-          lhs = CVariable(bin(self.PossibleBinopWithFlags[tree.symbol]))
+          lhs = CVariable(hex(self.PossibleBinopWithFlags[tree.symbol]))
           existsSubSC[tree.symbol] = SwitchCaseHelp(\
             CBinExpr('&', rhs, lhs))
         val = 0b00
         for f in tree.flags:
           val = val | self.PossibleFlags[f]
-        cVal = CVariable(bin(val))
+        cVal = CVariable(hex(val))
         existsSubSC[tree.symbol].addCase([cVal], [cRet])
       elif tree.symbol == 'icmp':
         # FIXME:  Currently doesn't support variable predicates. Are variable
@@ -854,6 +854,9 @@ class BUCodeGenHelper(object):
   def emit_runOnInst(self):
     start = 'Instruction *InstCombiner::runOnInstruction(Instruction*I, ' +\
       'DenseMap<Value*,unsigned> &sa) {\n'
+    mid = ['x = cast<Value>(I);',
+          'unsigned tableValue = retrieveStateValue(I, sa);',
+          'sa.insert(std::make_pair(x, tableValue));']
     end = '}\n'
 
     mapping = self.tables.mapping
@@ -861,8 +864,10 @@ class BUCodeGenHelper(object):
     switchCase = SwitchCaseHelp(CVariable('tableValue'))
     defaultCode = [CReturn(CVariable('nullptr'))]
     switchCase.setDefault(defaultCode)
+    usedVars = {}
 
     for stateId,ms in mapping.items():
+      self.out.write("// {}: {}\n".format(stateId, ms))
       red = TableBuilder.reduceMatchSet(ms)
       for t in red:
         if t.relatedRuleId is not None:
@@ -878,13 +883,24 @@ class BUCodeGenHelper(object):
       for i in ms:
         caseVar.append(CVariable(i))
       switchCase.addCase(caseVar, gen)
+      for v,t in transformHelper.cgm.name_type.iteritems():
+        if v not in usedVars:
+          usedVars[v] = t
       cur = cur + 1
 
-    switchCaseCode = nest(2, switchCase.generate().format())
+    decl_it = CDefinition.block((t, CVariable(v))
+      for v,t in usedVars.iteritems())
+    decl = iter_seq(line + d.format() for d in decl_it)
+
+    switchCaseCode = nest(2, seq(decl, line,
+                                  mid[0], line,
+                                  mid[1], line,
+                                  mid[2], line,
+          switchCase.generate().format()))
 
     self.out.write(start)
     self.out.write(switchCaseCode.format())
-    self.out.write(end)
+    self.out.write('\n' + end)
 
   def emit_code(self):
     self.emit_constant_code()
@@ -981,7 +997,10 @@ class TransformationHelper(object):
 
   def generateTransformation(self):
     rule = self.tree.relatedRuleId
-    clauses = []
+    clauses = []  # if statement clauses
+    body = [] # code body
+    initialize = [] # variables initialize code
+
     todo = [[]]
 
     while todo:
@@ -992,6 +1011,11 @@ class TransformationHelper(object):
           next_coor = copy.deepcopy(coordinate)
           next_coor.append(i)
           todo.append(next_coor)
+      if coordinate:
+        coorVar = CVariable(createVar(coordinate))
+        parentVar = CVariable(createVar(coordinate[:-1]))
+        cast = CFunctionCall('cast<Instruction>', parentVar)
+        initialize.append(CAssign(coorVar, cast))
       self.cgm.bind_tree(tree, coordinate)
       self.eg.processSubtree(coordinate)
       tree.register_types(self.cgm)
@@ -1019,8 +1043,8 @@ class TransformationHelper(object):
       tree.register_types(self.cgm)
 
     self.cgm.unify(self.tree, tgt_tree)
-    self.cgm.value_names[tgt_tree] = tgt_tree.name
-    self.cgm.bind_name(tgt_tree.name, self.cgm.value_ctype(tgt_tree))
+    tgt_name = re.sub('[^a-zA-Z0-9_]', '', tgt_tree.name)
+    self.cgm.value_names[tgt_tree] = tgt_name
 
     for v,t in self.cgm.guaranteed.iteritems():
       if not self.cgm.bound(v): continue
@@ -1034,8 +1058,6 @@ class TransformationHelper(object):
 
     if DO_STATS and LIMITER:
       clauses.append(CBinExpr('<', CVariable('Rule' + str(rule)), CVariable('10000')))
-
-    body = []
 
     if DO_STATS:
       body = [CUnaryExpr('++', CVariable('Rule' + str(rule)))]
@@ -1069,11 +1091,17 @@ class TransformationHelper(object):
 
     clauses.extend(self.eg.equivalenceCode())
 
+    for c,p in self.cgm.const_path.items():
+      pathVar = CVariable(createVar(p))
+      constVar = CVariable(c)
+      cast = CFunctionCall('cast<ConstantInt>', pathVar)
+      initialize.append(CAssign(constVar, cast))
+
     if clauses:
       cif = CIf(CBinExpr.reduce('&&', clauses), body, [CReturn(CVariable('nullptr'))])
-      return [cif]
+      return initialize + [cif]
     else:
-      return body
+      return initialize + body
 
     # cif = CIf(CBinExpr.reduce('&&', clauses), body).format()
 
@@ -1098,7 +1126,7 @@ class CodeGeneratorManager(object):
   PtrInstruction = CPtrType(CTypeName('Instruction'))
 
   def __init__(self):
-    self.usedVariables = dict()
+    self.const_path = dict() # value -> path
     self.value_names = {} # value -> name
     self.key_names = {}   # key -> name
     self.names = set()    # all created names
@@ -1197,10 +1225,12 @@ class CodeGeneratorManager(object):
     return var in self.name_type
 
   def bind_tree(self, tree, path):
-    cty = self.value_ctype(tree)
+    if tree.nodeType() == NodeType.ConstWildcard:
+      self.bind_name(tree.getSymbol(), self.PtrConstantInt)
+      self.const_path[tree.getSymbol()] = path
     name = createVar(path)
     self.value_names[tree] = name
-    self.bind_name(name, cty)
+    self.bind_name(name, self.PtrValue)
 
   def bind_name(self, name, ctype):
     assert name not in self.name_type
