@@ -327,7 +327,7 @@ class BUUndefVal(BUExprTree):
 class BUCnstUnaryOp(BUExprTree):
   def register_types(self, cgm):
     self.childAt(1).register_types(cgm)
-    cgm.register_types(self, self.type, BUIntType())
+    cgm.register_type(self, self.type, BUIntType())
     cgm.unify(self, self.childAt(1))
 
   def get_APInt_or_u64(self, cgm):

@@ -1213,8 +1213,11 @@ class CodeGeneratorManager(object):
     elif var in self.value_names:
       name = self.value_names[var]
       return CVariable(name)
+    elif len(var.name) > 0:
+      name = re.sub('[^a-zA-Z0-9_]', '', var.name)
+      return CVariable(name)
     else:
-      return CVariable(var)
+      assert(False)
 
   def get_ctype(self, name):
     return self.name_type[name]

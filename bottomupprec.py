@@ -28,7 +28,8 @@ class BUBoolPred:
       v2 = BUExprTree.createWithExpr(pred.v2)
       return BUCompOpPred(BinaryBoolPred.opnames[pred.op], [v1, v2])
     elif isinstance(pred, LLVMBoolPred):
-      return BULLVMPred(pred.op, [arg for arg in pred.args])
+      return BULLVMPred(pred.op,\
+        [BUExprTree.createWithExpr(arg) for arg in pred.args])
     else:
       assert(False)
 
