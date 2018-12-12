@@ -16,13 +16,11 @@ class BUBoolPred:
       v = BUBoolPred.predToBUPred(pred.v)
       return BUOpPred('not', [v])
     elif isinstance(pred, PredAnd):
-      v1 = BUBoolPred.predToBUPred(pred.v1)
-      v2 = BUBoolPred.predToBUPred(pred.v2)
-      return BUOpPred('and', [v1, v2])
+      return BUOpPred('and', \
+        [BUBoolPred.predToBUPred(arg) for arg in pred.args])
     elif isinstance(pred, PredOr):
-      v1 = BUBoolPred.predToBUPred(pred.v1)
-      v2 = BUBoolPred.predToBUPred(pred.v2)
-      return BUOpPred('or', [v1, v2])
+      return BUOpPred('or', \
+        [BUBoolPred.predToBUPred(arg) for arg in pred.args])
     elif isinstance(pred, BinaryBoolPred):
       v1 = BUExprTree.createWithExpr(pred.v1)
       v2 = BUExprTree.createWithExpr(pred.v2)
@@ -44,12 +42,6 @@ class BUTruePred(BUBoolPred):
     return CVariable('true')
 
 class BUOpPred(BUBoolPred):
-  _predChildren = {
-    'not' : 1, 
-    'and' : 2,
-    'or' : 2,
-  }
-
   _pred = {
     'not' : '!',
     'and' : '&&',
@@ -57,7 +49,6 @@ class BUOpPred(BUBoolPred):
   }
 
   def __init__(self, op, children):
-    assert(op in self._predChildren and len(children) == self._predChildren[op])
     self.op = op
     self.children = copy.deepcopy(children)
 

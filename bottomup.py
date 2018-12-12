@@ -1016,9 +1016,10 @@ class TransformationHelper(object):
         parentVar = CVariable(createVar(coordinate[:-1]))
         cast = CFunctionCall('cast<Instruction>', parentVar)
         initialize.append(CAssign(coorVar, cast))
-      self.cgm.bind_tree(tree, coordinate)
+      if not self.cgm.bound(tree):
+        self.cgm.bind_tree(tree, coordinate)
+        tree.register_types(self.cgm)
       self.eg.processSubtree(coordinate)
-      tree.register_types(self.cgm)
 
     self.cgm.phase = self.cgm.Target
 
