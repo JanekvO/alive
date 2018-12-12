@@ -1184,6 +1184,7 @@ class CodeGeneratorManager(object):
   def get_rep(self, tree):
     if tree not in self.reps:
       self.reps[tree] = None
+      return tree
     rep = self.reps[tree]
     if not isinstance(rep, BUExprTree) and rep == None:
       return tree
@@ -1267,7 +1268,7 @@ class CodeGeneratorManager(object):
 
     for v2 in it:
       r2 = self.get_rep(v2)
-      if r1 is r2:
+      if r1 == r2:
         continue
 
       if self.phase == self.Target and self.bound(r1) and self.bound(r2):

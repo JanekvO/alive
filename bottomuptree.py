@@ -49,6 +49,9 @@ class BUUnknownType(Type):
     del self.types[self.Array]
     return self
 
+  def ensureFirstClass(self):
+    return self.ensureIntPtrOrVector()
+
 class BUNameType(UnknownType):
   def __init__(self, name):
     UnknownType.__init__(self)
@@ -139,13 +142,6 @@ class BUExprTree(ExpressionTree):
     self.relatedRuleId = rule
 
   def getSymbol(self):
-    # if self.nodeType() == NodeType.ConstWildcard:
-    #   s = 'C'
-    # elif self.nodeType() == NodeType.Wildcard:
-    #   s = '%'
-    # else:
-    #   s = self.symbol
-
     s = self.symbol
     if self.symbol == 'icmp':
       s = s + Icmp.opnames[self.auxiliaryOp]
@@ -451,19 +447,18 @@ class BUCnstFunction(BUExprTree):
 
 class BUCopyOperand(BUExprTree):
   def targetVisit(self, path, cgm, use_builder=False):
-    subtree = self.subtree(path)
-    instr = cgm.get_cexp(subtree)
+    instr = cgm.get_cexp(self)
 
     if use_builder:
       instr = CVariable('Builder').dot('Insert', [instr])
 
-    if subtree.nodeType() == NodeType.Operation:
+    if self.nodeType() == NodeType.Operation:
       ctype = cgm.PtrInstruction
     else:
       ctype = cgm.PtrValue
 
     # FIXME: Fix the following return for bottom-up
-    return [CDefinition.init(ctype, cgm.get_cexp(subtree), instr)]
+    return [CDefinition.init(ctype, cgm.get_cexp(self), instr)]
 
   def register_types(self, cgm):
     cgm.register_type(self, self.type, BUUnknownType())
@@ -493,19 +488,17 @@ class BUBinOp(BUExprTree):
   }
 
   def targetVisit(self, path, cgm, use_builder=False):
-    subtree = self.subtree(path)
-    opand1 = subtree.childAt(1)
-    opand2 = subtree.childAt(2)
-    cons = CFunctionCall('BinaryOperator::Create' + self._LLVM_BinOp_Name[subtree.symbol],
+    opand1 = self.childAt(1)
+    opand2 = self.childAt(2)
+    cons = CFunctionCall('BinaryOperator::Create' + self._LLVM_BinOp_Name[self.symbol],
       cgm.get_cexp(opand1), cgm.get_cexp(opand2))
 
     if use_builder:
       cons = CVariable('Builder').dot('Insert', [cons])
 
-    tst = cgm.get_cexp(self)
     gen = [CDefinition.init(CPtrType(CTypeName('BinaryOperator')), cgm.get_cexp(self), cons)]
 
-    for f in subtree.flags:
+    for f in self.flags:
       setter = {'nsw': 'setHasNoSignedWrap', 'nuw': 'setHasNoUnsignedWrap', 'exact': 'setIsExact'}[f]
       gen.append(cgm.get_cexp(self).arr(setter, [CVariable('true')]))
 
@@ -525,26 +518,25 @@ class BUConversionOp(BUExprTree):
     eg.processSubtree(path_1)
 
   def targetVisit(self, path, cgm, use_builder=False):
-    subtree = self.subtree(path)
-    if subtree.op == ConversionOp.ZExtOrTrunc:
+    if self.op == ConversionOp.ZExtOrTrunc:
       assert use_builder  #TODO: handle ZExtOrTrunk in root position
       instr = CVariable('Builder').dot('CreateZExtOrTrunc',
-        [cgm.get_cexp(subtree.childAt(1)), cgm.get_llvm_type(subtree)])
+        [cgm.get_cexp(self.childAt(1)), cgm.get_llvm_type(self)])
       return [CDefinition.init(
         cgm.PtrValue,
-        cgm.get_cexp(subtree),
+        cgm.get_cexp(self),
         instr)]
 
     else:
-      instr = CFunctionCall('new ' + ConversionOp.constr[subtree.op],
-        cgm.get_cexp(subtree.childAt(1)), cgm.get_llvm_type(subtree))
+      instr = CFunctionCall('new ' + ConversionOp.constr[self.op],
+        cgm.get_cexp(self.childAt(1)), cgm.get_llvm_type(self))
 
       if use_builder:
         instr = CVariable('Builder').dot('Insert', [instr])
 
     return [CDefinition.init(
       cgm.PtrInstruction,
-      cgm.get_cexp(subtree),
+      cgm.get_cexp(self),
       instr)]
 
   @staticmethod
@@ -592,25 +584,24 @@ class BUIcmp(BUExprTree):
 
   def targetVisit(self, path, cgm, use_builder=False):
     # determine the predicate
-    subtree = self.subtree(path)
-    if subtree.auxiliaryOp == Icmp.Var:
-      key = subtree.symbol if subtree.symbol else 'Pred ' + subtree.name
+    if self.auxiliaryOp == Icmp.Var:
+      key = self.symbol if self.symbol else 'Pred ' + self.name
       opname = cgm.get_key_name(key)
       assert cgm.bound(opname)
       # TODO: confirm type
 
     else:
-      opname = Icmp.op_enum[subtree.auxiliaryOp]
+      opname = Icmp.op_enum[self.auxiliaryOp]
 
     instr = CFunctionCall('new ICmpInst', CVariable(opname),
-      cgm.get_cexp(subtree.childAt(1)), 
-      cgm.get_cexp(subtree.childAt(2)))
+      cgm.get_cexp(self.childAt(1)), 
+      cgm.get_cexp(self.childAt(2)))
 
     if use_builder:
       instr = CVariable('Builder').dot('Insert', [instr])
 
     return [
-      CDefinition.init(cgm.PtrInstruction, cgm.get_cexp(subtree), instr)]
+      CDefinition.init(cgm.PtrInstruction, cgm.get_cexp(self), instr)]
 
   def register_types(self, cgm):
     cgm.register_type(self, self.type, BUIntType(1))
@@ -627,18 +618,17 @@ class BUSelect(BUExprTree):
     eg.processSubtree(path_2)
 
   def targetVisit(self, path, cgm, use_builder=False):
-    subtree = self.subtree(path)
     instr = CFunctionCall('SelectInst::Create',
-      cgm.get_cexp(subtree.childAt(1)),
-      cgm.get_cexp(subtree.childAt(2)),
-      cgm.get_cexp(subtree.childAt(3)))
+      cgm.get_cexp(self.childAt(1)),
+      cgm.get_cexp(self.childAt(2)),
+      cgm.get_cexp(self.childAt(3)))
 
     if use_builder:
       instr = CVariable('Builder').dot('Insert', [instr])
 
-    return [CDefinition.init(cgm.PtrInstruction, cgm.get_cexp(subtree), instr)]
+    return [CDefinition.init(cgm.PtrInstruction, cgm.get_cexp(self), instr)]
 
   def register_types(self, cgm):
-    cgm.register_type(self, self.type, UnknownType().ensureFirstClass())
+    cgm.register_type(self, self.type, BUUnknownType().ensureFirstClass())
     cgm.register_type(self.childAt(1), self.childAt(1).type, BUIntType(1))
     cgm.unify(self, self.childAt(2), self.childAt(3))
