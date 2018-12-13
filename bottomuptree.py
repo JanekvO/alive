@@ -517,8 +517,17 @@ class BUConversionOp(BUExprTree):
     path_1 = copy.deepcopy(path).append(1)
     eg.processSubtree(path_1)
 
+  _constr = {
+    'trunc' : 'TruncInst',
+    'zext' : 'ZExtInst',
+    'sext' : 'SExtInst',
+    'ptrtoint' : 'PtrToIntInst',
+    'inttoptr' : 'IntToPtrInst',
+    'bitcast' : 'BitCastInst',
+  }
+
   def targetVisit(self, path, cgm, use_builder=False):
-    if self.op == ConversionOp.ZExtOrTrunc:
+    if self.symbol == 'ZExtOrTrunc':
       assert use_builder  #TODO: handle ZExtOrTrunk in root position
       instr = CVariable('Builder').dot('CreateZExtOrTrunc',
         [cgm.get_cexp(self.childAt(1)), cgm.get_llvm_type(self)])
@@ -528,7 +537,7 @@ class BUConversionOp(BUExprTree):
         instr)]
 
     else:
-      instr = CFunctionCall('new ' + ConversionOp.constr[self.op],
+      instr = CFunctionCall('new ' + self._constr[self.symbol],
         cgm.get_cexp(self.childAt(1)), cgm.get_llvm_type(self))
 
       if use_builder:
@@ -564,9 +573,9 @@ class BUConversionOp(BUExprTree):
       cgm.register_type(self.childAt(1), self.stype, BUUnknownType())
 
     if self.enforceIntTgt(self.symbol):
-      cgm.register_type(self, self.type, IntType())
+      cgm.register_type(self, self.type, BUIntType())
     elif self.enforcePtrTgt(self.symbol):
-      cgm.register_type(self, self.type, PtrType())
+      cgm.register_type(self, self.type, BUPtrType())
     else:
       cgm.register_type(self, self.type, BUUnknownType())
 
