@@ -1241,7 +1241,8 @@ class CodeGeneratorManager(object):
   def add_path_var(self, tree, path):
     assert isinstance(tree, BUExprTree)
 
-    if tree.nodeType() == NodeType.ConstWildcard:
+    if tree.nodeType() == NodeType.ConstWildcard and \
+        tree.getSymbol() not in self.names:
       self.add_path_name(tree.getSymbol(), self.PtrConstantInt)
       self.const_path[tree.getSymbol()] = path
 

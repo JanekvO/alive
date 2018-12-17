@@ -130,7 +130,7 @@ class BULLVMPred(BUBoolPred):
     for ch in self.children:
       ch.register_types(cgm)
 
-    if self.op in ['maskZero', 'NSWAdd']:
+    if self.op in {LLVMBoolPred.maskZero, LLVMBoolPred.NSWAdd}:
       cgm.unify(self.children[0], self.children[1])
 
   def visitPrecondition(self, cgm):
