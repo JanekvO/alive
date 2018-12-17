@@ -706,7 +706,8 @@ class BUCodeGenHelper(object):
         #         predicates even used?
         if tree.symbol not in existsSubSC:
           existsSubSC[tree.symbol] = SwitchCaseHelp(\
-            var.arr('getPredicate', ''))
+            CFunctionCall('cast<CmpInst>', var).arr('getPredicate', ''))
+            #var.arr('getPredicate', ''))
           existsSubSC[tree.symbol].addToDefault(retFalse)
         cVal = CVariable(Icmp.op_enum[tree.auxiliaryOp])
         existsSubSC[tree.symbol].addCase([cVal], [retTrue])
@@ -752,7 +753,8 @@ class BUCodeGenHelper(object):
         #         predicates even used?
         if tree.symbol not in existsSubSC:
           existsSubSC[tree.symbol] = SwitchCaseHelp(\
-            var.arr('getPredicate', ''))
+            CFunctionCall('cast<CmpInst>', var).arr('getPredicate', ''))
+            #var.arr('getPredicate', ''))
         cVal = CVariable(Icmp.op_enum[tree.auxiliaryOp])
         existsSubSC[tree.symbol].addCase([cVal], [cRet])
       else:
@@ -772,7 +774,7 @@ class BUCodeGenHelper(object):
     start = '\nstatic unsigned retrieveStateValue(ConstantInt *C) {\n'
     end = '\n}\n'
     cwc = BUExprTree.createConstWC()
-    cGetVal = CVariable('C').arr('getValue','').dot('getZExtValue','')
+    cGetVal = CVariable('C').arr('getValue','').dot('getSExtValue','')
     switchCase = SwitchCaseHelp(cGetVal)
 
     for idState,ms in self.tables.mapping.items():
