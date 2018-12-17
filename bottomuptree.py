@@ -165,10 +165,12 @@ class BUExprTree(ExpressionTree):
         return NodeType.ConstOperation
       else:
         return NodeType.Operation
-    elif RepresentsInt(self.symbol):
+    elif RepresentsInt(self.symbol) or \
+      isinstance(self, BUConstantVal) or \
+      isinstance(self, BUUndefVal):
       return NodeType.ConstVal
     else:
-      return None
+      assert(False), 'tree should have a nodeType'
 
   def get_APInt_or_u64(self, cgm):
     assert(False)

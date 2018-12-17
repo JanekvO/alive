@@ -1048,7 +1048,8 @@ class TransformationHelper(object):
     self.cgm.value_names[tgt_tree] = tgt_name
 
     for v,t in self.cgm.guaranteed.iteritems():
-      if not self.cgm.bound(v): continue
+      if not self.cgm.bound(v) or v.nodeType() == NodeType.ConstVal:
+        continue
       clauses.extend(self.minimal_type_constraints(\
         self.cgm.get_llvm_type(v), \
         self.cgm.required[v], \
