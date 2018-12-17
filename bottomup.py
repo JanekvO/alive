@@ -1014,7 +1014,7 @@ class TransformationHelper(object):
       if coordinate:
         coorVar = CVariable(createVar(coordinate))
         parentVar = CVariable(createVar(coordinate[:-1]))
-        cast = CFunctionCall('cast<Instruction>', parentVar)
+        cast = CFunctionCall('cast<Instruction>', parentVar).arr('getOperand', [CVariable(coordinate[-1] - 1)])
         initialize.append(CAssign(coorVar, cast))
       if not self.cgm.bound(tree):
         self.cgm.bind_tree(tree)
@@ -1238,16 +1238,20 @@ class CodeGeneratorManager(object):
 
   def add_path_var(self, tree, path):
     assert isinstance(tree, BUExprTree)
-    assert tree not in self.value_names
 
     if tree.nodeType() == NodeType.ConstWildcard:
-      ctype = self.PtrConstantInt
+      self.add_path_name(tree.getSymbol(), self.PtrConstantInt)
       self.const_path[tree.getSymbol()] = path
-    else:
-      ctype = self.PtrValue
 
     name = createVar(path)
     self.value_names[tree] = name
+    self.add_path_name(name, self.PtrValue)
+
+  def add_path_name(self, name, ctype):
+    assert name not in self.name_type
+    assert isinstance(name, str)
+    assert name not in self.names
+
     self.names.add(name)
     self.name_type[name] = ctype
 
