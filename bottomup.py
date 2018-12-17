@@ -1017,8 +1017,9 @@ class TransformationHelper(object):
         cast = CFunctionCall('cast<Instruction>', parentVar)
         initialize.append(CAssign(coorVar, cast))
       if not self.cgm.bound(tree):
-        self.cgm.bind_tree(tree, coordinate)
+        self.cgm.bind_tree(tree)
         tree.register_types(self.cgm)
+      self.cgm.add_path_var(tree, coordinate)
       self.eg.processSubtree(coordinate)
 
     self.cgm.phase = self.cgm.Target
@@ -1133,6 +1134,7 @@ class CodeGeneratorManager(object):
     self.key_names = {}   # key -> name
     self.names = set()    # all created names
     self.name_type = {}   # name -> ctype
+    self.bound_vl = set() # value -> path
     self.reps = {}        # value -> value
     self.required = {}    # value -> type
     self.guaranteed = {}  # value -> type
@@ -1225,24 +1227,27 @@ class CodeGeneratorManager(object):
     return self.name_type[name]
 
   def bound(self, var):
-    if isinstance(var, BUExprTree):
-      return var in self.value_names and \
-        self.value_names[var] in self.name_type
-    return var in self.name_type
+    assert isinstance(var, BUExprTree)
+    return var in self.bound_vl
 
-  def bind_tree(self, tree, path):
+  def bind_tree(self, tree):
+    assert tree not in self.bound_vl
+    assert isinstance(tree, BUExprTree)
+
+    self.bound_vl.add(tree)
+
+  def add_path_var(self, tree, path):
+    assert isinstance(tree, BUExprTree)
+    assert tree not in self.value_names
+
     if tree.nodeType() == NodeType.ConstWildcard:
-      self.bind_name(tree.getSymbol(), self.PtrConstantInt)
+      ctype = self.PtrConstantInt
       self.const_path[tree.getSymbol()] = path
+    else:
+      ctype = self.PtrValue
+
     name = createVar(path)
     self.value_names[tree] = name
-    self.bind_name(name, self.PtrValue)
-
-  def bind_name(self, name, ctype):
-    assert name not in self.name_type
-    assert isinstance(name, str)
-    assert name not in self.names
-
     self.names.add(name)
     self.name_type[name] = ctype
 
