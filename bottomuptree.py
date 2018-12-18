@@ -223,6 +223,7 @@ class BUExprTree(ExpressionTree):
       tree = BUCopyOperand(expr.getName(), 0)
     elif isinstance(expr, BinOp):
       tree = BUBinOp(expr.getOpName(), 0)
+      tree.flags = expr.flags
     elif isinstance(expr, ConversionOp):
       tree = BUConversionOp(expr.getOpName(), 0)
       tree.stype = BUTypeFactory.BUType(expr.stype)

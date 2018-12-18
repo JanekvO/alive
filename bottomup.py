@@ -613,7 +613,7 @@ class BUCodeGenHelper(object):
     # Use the order as defined in symMap
     for sym,tree in self.tables.symMap.items():
       if tree.numOfChildren() > 0:
-        mapStr = mapStr + '  {{\n'
+        mapStr = mapStr + '  {{ // ' + sym + '\n'
         for ch,stateMapping in self.tables.tableMap[sym].items():
           mapStr = mapStr + '    {{'
           for i in xrange(mapLen):
@@ -637,7 +637,7 @@ class BUCodeGenHelper(object):
     # Again, use the order as defined in symMap
     for sym,tree in self.tables.symMap.items():
       if tree.numOfChildren() > 0:
-        tablStr = tablStr + '  {\n'
+        tablStr = tablStr + '  { // ' + sym + '\n'
         childrenList = list()
         curChild = self.tables.tables[sym]
         for i in xrange(tree.numOfChildren()):
@@ -1046,7 +1046,7 @@ class TransformationHelper(object):
       tree.register_types(self.cgm)
 
     self.cgm.unify(self.tree, tgt_tree)
-    tgt_name = re.sub('[^a-zA-Z0-9_]', '', tgt_tree.name)
+    tgt_name = '_' + re.sub('[^a-zA-Z0-9_]', '', tgt_tree.name)
     self.cgm.value_names[tgt_tree] = tgt_name
 
     for v,t in self.cgm.guaranteed.iteritems():
@@ -1207,7 +1207,7 @@ class CodeGeneratorManager(object):
       name = self.value_names[var]
       return CVariable(name)
     elif len(var.name) > 0:
-      name = re.sub('[^a-zA-Z0-9_]', '', var.name)
+      name = '_' + re.sub('[^a-zA-Z0-9_]', '', var.name)
       return CVariable(name)
     else:
       assert(False)
