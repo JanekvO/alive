@@ -773,19 +773,18 @@ class BUCodeGenHelper(object):
   def emit_retrieveStateValue_ConstantInt(self):
     start = '\nstatic unsigned retrieveStateValue(ConstantInt *C) {\n'
     end = '\n}\n'
-    cwc = BUExprTree.createConstWC()
     cGetVal = CVariable('C').arr('getValue','').dot('getSExtValue','')
     switchCase = SwitchCaseHelp(cGetVal)
 
     for idState,ms in self.tables.mapping.items():
       caseCode = CReturn(CVariable(str(idState)))
-      if TableBuilder.matchSetSubset([cwc], ms):
-        reducedms = TableBuilder.reduceMatchSet(ms)
-        if TableBuilder.areCollectionEqual(reducedms, [cwc]):
+      reducedms = TableBuilder.reduceMatchSet(ms)
+      if len(reducedms) == 1:
+        msVal = reducedms[0]
+        if msVal.nodeType() == NodeType.ConstWildcard:
           switchCase.setDefault([caseCode])
-        else:
-          assert(len(reducedms) == 1),'Reduced matchset should not '
-          caseValue = CVariable(str(reducedms[0]))
+        elif msVal.nodeType() == NodeType.ConstVal:
+          caseValue = CVariable(str(reducedms[0].val))
           switchCase.addCase([caseValue], [caseCode])
 
     switchCaseCode = nest(2, switchCase.generate().format())
@@ -1107,18 +1106,6 @@ class TransformationHelper(object):
       return initialize + [cif]
     else:
       return initialize + body
-
-    # cif = CIf(CBinExpr.reduce('&&', clauses), body).format()
-
-    # decl_it = CDefinition.block((t, CVariable(v))
-    #   for v,t in cg.name_type.iteritems() if v != 'I')
-    # decl = iter_seq(line + d.format() for d in decl_it)
-
-    # code = nest(2,
-    #   seq(line, '{ // ', name,
-    #       nest(2, seq(decl, line, line, cif)), line, '}'))
-
-    # out.write(code.format())
 
 # Not inheriting the CG in gen.py since we don't have the old expression
 # and we don't care about source part matching since that's covered by the

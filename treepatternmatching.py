@@ -110,7 +110,7 @@ class TreeNode(object):
       return True
     # true if p1 and p2 are (the same) constant values
     elif p1.nodeType() is NodeType.ConstVal and p2.nodeType() is NodeType.ConstVal and \
-          p1.getSymbol() == p2.getSymbol():
+          (p1.getSymbol() == p2.getSymbol() or p1.val == p2.val):
       return True
     # if both are operations and their symbols match, recurs on their children.
     # if all children of p1 subsume children of p2, return true
