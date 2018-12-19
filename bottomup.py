@@ -1052,6 +1052,7 @@ class TransformationHelper(object):
     self.cgm.unify(self.tree, tgt_tree)
     tgt_name = '_' + re.sub('[^a-zA-Z0-9_]', '', tgt_tree.name)
     self.cgm.value_names[tgt_tree] = tgt_name
+    clauses.extend(self.cgm.clauses)
 
     for v,t in self.cgm.guaranteed.iteritems():
       if not self.cgm.bound(v) or v.nodeType() == NodeType.ConstVal:
