@@ -870,11 +870,15 @@ class BUCodeGenHelper(object):
     for stateId,ms in mapping.items():
       self.out.write("// {}: {}\n".format(stateId, ms))
       red = TableBuilder.reduceMatchSet(ms)
+      # TODO: figure out a way to process multiple unified tree patterns.
+      # For now we process the first one. Since the order is random, the
+      # first tree pattern might not be the best fit.
       for t in red:
         if t.relatedRuleId is not None:
           if t not in exprToMatchsets:
             exprToMatchsets[t] = list()
           exprToMatchsets[t].append(stateId)
+          break
 
     cur = 1
     for e,ms in exprToMatchsets.items():
@@ -1068,6 +1072,7 @@ class TransformationHelper(object):
 
     todo = [[]]
     transformCode = []
+    skip = set()
 
     while todo:
       coordinate = todo.pop(0)
@@ -1078,7 +1083,8 @@ class TransformationHelper(object):
           next_coor.append(i)
           todo.append(next_coor)
       nt = tree.nodeType()
-      if tree != tgt_tree and nt == NodeType.Operation:
+      if tree != tgt_tree and nt == NodeType.Operation and tree not in skip:
+        skip.add(tree)
         transformCode.append(tree.targetVisit(coordinate, self.cgm, True))
 
     transformCode.reverse()
