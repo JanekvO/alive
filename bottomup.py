@@ -1067,6 +1067,7 @@ class TransformationHelper(object):
       body = [CUnaryExpr('++', CVariable('Rule' + str(rule)))]
 
     todo = [[]]
+    transformCode = []
 
     while todo:
       coordinate = todo.pop(0)
@@ -1078,7 +1079,11 @@ class TransformationHelper(object):
           todo.append(next_coor)
       nt = tree.nodeType()
       if tree != tgt_tree and nt == NodeType.Operation:
-        body.extend(tree.targetVisit(coordinate, self.cgm, True))
+        transformCode.append(tree.targetVisit(coordinate, self.cgm, True))
+
+    transformCode.reverse()
+    for t in transformCode:
+      body.extend(t)
 
     if isinstance(tgt_tree, BUCopyOperand):
       body.append(
