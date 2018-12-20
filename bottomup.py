@@ -1105,7 +1105,8 @@ class TransformationHelper(object):
 
     body.append(CReturn(self.cgm.get_cexp(tgt_tree)))
 
-    clauses.extend(self.eg.equivalenceCode())
+    # Force equivalence code to occur prior to the other clauses
+    clauses = self.eg.equivalenceCode() + clauses
 
     for c,p in self.cgm.const_path.items():
       pathVar = CVariable(createVar(p))
