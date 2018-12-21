@@ -582,44 +582,60 @@ class BUCodeGenHelper(object):
   def emit_constant_code(self):
     constantStr = '\n' +\
     '#include \"llvm/ADT/DenseMap.h\"\n' +\
-    '#include \"llvm/ADT/Hashing.h\"\n' +\
-    '#include <unordered_map>\n' +\
     '#include <array>\n' +\
     '#include <vector>\n' +\
     '\n' +\
-    'using llvm::hash_value;\n' +\
-    'struct VectorHash {\n' +\
-    '  std::size_t operator()(std::vector<unsigned> const& v) const noexcept {\n' +\
-    '    llvm::hash_code hv = llvm::hash_value(0);\n' +\
-    '    for (auto element : v) {\n' +\
-    '      hv = llvm::hash_value(std::make_pair(hv, element));\n' +\
-    '    }\n' +\
-    '    return hv;\n' +\
-    '  }\n' +\
-    '};\n\n' +\
     'static unsigned retrieveStateValue(Value *V, DenseMap<Value*,unsigned> &sa);\n' +\
     'static unsigned retrieveStateValue(ConstantInt *C);\n' +\
     'static unsigned retrieveStateValue(Instruction *I, DenseMap<Value*,unsigned> &sa);\n' +\
     '\n'
     self.out.write(constantStr)
-  
+
+  def normalizeMapping(self):
+    # We need to "normalize" the mapping s.t. the numbers go in sequential
+    # order instead of having mappings like [0, 4, 7]
+    self.normalizedMapping = {}
+
+    # Initialize
+    for sym,tree in self.tables.symMap.items():
+      self.normalizedMapping[sym] = dict()
+      for i in xrange(1, tree.numOfChildren() + 1):
+        self.normalizedMapping[sym][i] = dict()
+
+    mapLen = len(self.tables.mapping)
+
+    # Normalize
+    for sym,tree in self.tables.symMap.items():
+      for ch,stateMapping in self.tables.tableMap[sym].items():
+        localMapping = 0
+        for i in xrange(mapLen):
+          mapVal = stateMapping[i]
+          if mapVal not in self.normalizedMapping[sym][ch]:
+            self.normalizedMapping[sym][ch][mapVal] = localMapping
+            localMapping += 1
+
   def emit_statemapping(self):
+    mapLen = len(self.tables.mapping)
+    nrMap = len(self.tables.symMap)
     startStr = 'static const std::array<std::vector<' +\
       'std::array<unsigned,{}>>,{}> computeMap = {{{{\n'.format( \
-      len(self.tables.mapping), len(self.tables.symMap))
+      mapLen, nrMap)
     endStr = '}};\n\n'
     mapStr = ''
-    mapLen = len(self.tables.mapping)
     # Use the order as defined in symMap
     for sym,tree in self.tables.symMap.items():
       if tree.numOfChildren() > 0:
         mapStr = mapStr + '  {{ // ' + sym + '\n'
+        multiplyOffset = 1
         for ch,stateMapping in self.tables.tableMap[sym].items():
           mapStr = mapStr + '    {{'
           for i in xrange(mapLen):
-            mapStr = mapStr + str(stateMapping[i])
-            if i != mapLen-1:
-              mapStr = mapStr + ','
+            value = stateMapping[i]
+            normalizedValue = self.normalizedMapping[sym][ch][value]
+            # Apply offset for easier lookup in generated code
+            multipliedValue = normalizedValue * multiplyOffset
+            mapStr = mapStr + str(multipliedValue) + ','
+          multiplyOffset *= len(self.normalizedMapping[sym][ch])
           mapStr = mapStr + '}},\n'
         mapStr = mapStr + '  }},\n'
 
@@ -628,38 +644,43 @@ class BUCodeGenHelper(object):
     self.out.write(endStr)
 
   def emit_tables(self):
-    startStr = '\n' +\
-      'static const std::array<std::unordered_map<std::vector<unsigned>' +\
-      ',unsigned,VectorHash>,{}> computeTables = {{{{\n'.format(len(self.tables.symMap))
-    endStr = '}};\n\n'
-    tablStr = ''
-
-    # Again, use the order as defined in symMap
-    for sym,tree in self.tables.symMap.items():
-      if tree.numOfChildren() > 0:
-        tablStr = tablStr + '  { // ' + sym + '\n'
+    outStr = ''
+    computeTables = list()
+    for sym, tree in self.tables.symMap.items():
+      outStr += 'static const unsigned {}ComputeTable['.format(sym)
+      computeTables.append('{}ComputeTable'.format(sym))
+      chNum = tree.numOfChildren()
+      if chNum > 0:
         childrenList = list()
         curChild = self.tables.tables[sym]
-        for i in xrange(tree.numOfChildren()):
+        for i in xrange(1, chNum + 1):
+          lenValue = len(self.normalizedMapping[sym][i])
           childList = list()
+          outStr += str(lenValue)
+          if i != chNum:
+            outStr += '*'
           for stateId in curChild:
             childList.append(stateId)
           curChild = curChild[stateId]
           childrenList.append(childList)
+        # All these reversals seem stupid, but they enforce the order in which
+        # the values should occur
+        childrenList.reverse()
         chCartProd = product(*childrenList)
-
+        outStr += '] = {'
         for el in chCartProd:
-          value = self.tables.retrieveValue(sym, *el)
-          tablStr = tablStr + '    {'
-          tablStr = tablStr + '{'
-          for ui in el:
-            tablStr = tablStr + str(ui) + ','
-          tablStr = tablStr + '},' + str(value) + '},\n'
-        tablStr = tablStr + '  },\n'
+          idx = reversed(el)
+          tableValue = self.tables.retrieveValue(sym, *idx)
+          outStr += str(tableValue) + ','
+      outStr += '};\n'
+    symMapLen = len(self.tables.symMap)
+    outStr += '\nstatic const unsigned *computeTables[{}] = '.format(symMapLen)
+    outStr += '{\n'
+    for cc in computeTables:
+      outStr += '  ' + cc + ',\n'
+    outStr += '};\n'
 
-    self.out.write(startStr)
-    self.out.write(tablStr)
-    self.out.write(endStr)
+    self.out.write(outStr)
 
   PossibleBinopWithFlags = {
     'add' : 0b11,
@@ -801,8 +822,10 @@ class BUCodeGenHelper(object):
     assert(self.tables.defaultInit is not None), \
       'No wildcard not supported yet for bottom-up matching'
     
-    body = '  std::vector<unsigned> operandMS;\n' +\
-    '  if(!I || !opcodeMappingExists(I))\n' +\
+    body = \
+    '  unsigned offset = 0;\n' +\
+    '  unsigned child = 0;\n' +\
+    '  if(!opcodeMappingExists(I))\n' +\
     '    return {};\n'.format(self.tables.defaultInit) +\
     '  for (Value *op : I->operands()) {\n' +\
     '    unsigned ms = {};\n'.format(self.tables.defaultInit) +\
@@ -812,12 +835,11 @@ class BUCodeGenHelper(object):
     '    } else {\n' +\
     '      ms = sa[op];\n' +\
     '    }\n' +\
-    '    unsigned mappedValue = computeMap[opcodeMapping(I)]' +\
-      '[operandMS.size()][ms];\n' +\
-    '    operandMS.push_back(mappedValue);\n' +\
+    '    offset += computeMap[opcodeMapping(I)][child][ms];\n' +\
+    '    child++;\n' +\
     '  }\n' +\
-    '  auto computeTable = computeTables[opcodeMapping(I)];\n' +\
-    '  return computeTable[operandMS];\n'
+    '  const unsigned *computeTable = computeTables[opcodeMapping(I)];\n' +\
+    '  return computeTable[offset];\n'
 
     self.out.write(start)
     self.out.write(body)
@@ -909,6 +931,7 @@ class BUCodeGenHelper(object):
 
   def emit_code(self):
     self.emit_constant_code()
+    self.normalizeMapping()
     self.emit_statemapping()
     self.emit_tables()
     self.emit_exist_mapping()
