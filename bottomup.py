@@ -606,13 +606,19 @@ class BUCodeGenHelper(object):
 
     # Normalize
     for sym,tree in self.tables.symMap.items():
-      for ch,stateMapping in self.tables.tableMap[sym].items():
+      numCh = tree.numOfChildren()
+      if numCh > 0:
+        lst = self.tables.tables[sym]
+        curCh = 1
         localMapping = 0
-        for i in xrange(mapLen):
-          mapVal = stateMapping[i]
-          if mapVal not in self.normalizedMapping[sym][ch]:
-            self.normalizedMapping[sym][ch][mapVal] = localMapping
-            localMapping += 1
+        while isinstance(lst, dict):
+          for element in lst:
+            if element not in self.normalizedMapping[sym][curCh]:
+              self.normalizedMapping[sym][curCh][element] = localMapping
+              localMapping += 1
+          curCh += 1
+          lst = lst[element]
+          localMapping = 0
 
   def emit_statemapping(self):
     mapLen = len(self.tables.mapping)
