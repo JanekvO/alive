@@ -8,6 +8,7 @@ from precondition import *
 from gen import MatchBuilder, CodeGenerator, minimal_type_constraints, get_root
 from codegen import *
 from treepatternmatching import *
+from topologicalorder import *
 
 from pdb import set_trace
 
@@ -114,6 +115,7 @@ class TDExprTree(ExpressionTree):
     elif nt is NodeType.ConstVal:
       # TODO: Don't like refering to class variables directly but I really need the value
       self.symbol = str(self.expr.val)
+      self.val = self.expr.val
     
   def nodeType(self):
     return ExpressionTree.retrieveExprType(self.expr)
@@ -769,7 +771,24 @@ def generate_automaton(opts, out):
     name, pre, src_bb, tgt_bb, src, tgt, src_used, tgt_used, tgt_skip = opt
     phs.append(TDpeepholeopt(rule, name, pre, src, tgt, tgt_skip))
 
-  PriorityLookup = {p:(len(phs) - i) for i,p in enumerate(phs)}
+  topo = TreeTopoGraph()
+
+  for ph1 in phs:
+    topo.addVertex(ph1)
+    for ph2 in phs:
+      if ph1.src_tree == ph2.src_tree or ph1.src_tree.isNotComparable(ph2.src_tree):
+        continue
+      elif ph1.src_tree.subsumes(ph2.src_tree):
+        topo.addEdge(ph2, ph1)
+      elif ph2.src_tree.subsumes(ph1.src_tree):
+        topo.addEdge(ph1, ph2)
+
+  topo.show('nonreduced')
+  topo.reduction()
+  topo.show('reduced')
+
+  priority = topo.topologicalSort()
+  PriorityLookup = {p:(len(phs) - i) for i,p in enumerate(priority)}
 
   prefixDc = PrefixTree(None, 0)
   
@@ -839,7 +858,8 @@ def generate_automaton(opts, out):
       #FIXME: a lot of matchbuilding is done here instead of its designated class
       iflist = []
       sink = False
-      for sym,ddst in dfa[current].items():
+      #for sym,ddst in dfa[current].items():
+      for sym,ddst in sorted(dfa[current].items(), key=lambda s: len(s[0]), reverse=True):
         rooted_prefix = currentStateAux.prefix.subtree(coordinate)
         if sym is Notequal:
           sink = ddst[0]
@@ -922,7 +942,10 @@ def generate_automaton(opts, out):
         # Cheating here, nullptr is technically not a variable
         elsebody = [CReturn(CVariable('nullptr'))]
 
-      stateFunctionBody.append(CElseIf(iflist, elsebody))
+      if len(iflist) > 0:
+        stateFunctionBody.append(CElseIf(iflist, elsebody))
+      else:
+        stateFunctionBody.append(CMultiStatement(elsebody))
 
     functionString = 'state_{}'.format(current)
     stateFunctions.append((functionString, stateFunctionBody))
