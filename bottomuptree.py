@@ -118,6 +118,7 @@ class BUExprTree(ExpressionTree):
   def __init__(self, symbol, numChildren):
     self.name = ''
     self.type = Type.Unknown
+    self.coordinate = ()
     self.symbol = symbol
     self.children = []
     self.flags = []
@@ -191,22 +192,25 @@ class BUExprTree(ExpressionTree):
     assert(False)
 
   @staticmethod
-  def createWithExpr(expr):
+  def createWithExpr(expr, coordinate):
     if isinstance(expr, Input):
       tree = BUInput(expr.getName(), 0)
       tree.name = tree.symbol
       tree.type = BUTypeFactory.BUType(expr.type)
+      tree.coordinate = tuple(coordinate)
       return tree
     elif isinstance(expr, ConstantVal):
       tree = BUConstantVal(expr.getName(), 0)
       tree.name = tree.symbol
       tree.val = expr.val
       tree.type = BUTypeFactory.BUType(expr.type)
+      tree.coordinate = tuple(coordinate)
       return tree
     elif isinstance(expr, UndefVal):
       tree = BUUndefVal(expr.getName(), 0)
       tree.name = tree.symbol
       tree.type = BUTypeFactory.BUType(expr.type)
+      tree.coordinate = tuple(coordinate)
       return tree
     elif isinstance(expr, CnstUnaryOp):
       tree = BUCnstUnaryOp(CnstUnaryOp.opnames[expr.op], 0)
@@ -216,8 +220,11 @@ class BUExprTree(ExpressionTree):
       tree = BUCnstFunction(CnstFunction.opnames[expr.op], 0)
       tree.type = BUTypeFactory.BUType(expr.type)
       tree.children = []
+      tree.coordinate = tuple(coordinate)
+      chNum = 1
       for arg in expr.args:
-        tree.children.append(BUExprTree.createWithExpr(arg))
+        tree.children.append(BUExprTree.createWithExpr(arg, coordinate + [chNum]))
+        chNum += 1
       return tree
     elif isinstance(expr, CopyOperand):
       tree = BUCopyOperand(expr.getName(), 0)
@@ -237,8 +244,11 @@ class BUExprTree(ExpressionTree):
     tree.type = BUTypeFactory.BUType(expr.type)
     children = ExpressionTree.retrieveOperands(expr)
     tree.children = []
+    tree.coordinate = tuple(coordinate)
+    chNum = 1
     for c in children:
-      tree.children.append(BUExprTree.createWithExpr(c))
+      tree.children.append(BUExprTree.createWithExpr(c, coordinate + [chNum]))
+      chNum += 1
     return tree
 
   @staticmethod
@@ -450,7 +460,7 @@ class BUCnstFunction(BUExprTree):
 
 class BUCopyOperand(BUExprTree):
   def targetVisit(self, path, cgm, use_builder=False):
-    instr = cgm.get_cexp(self)
+    instr = cgm.get_cexp(self.childAt(1))
 
     if use_builder:
       instr = CVariable('Builder').dot('Insert', [instr])

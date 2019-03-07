@@ -22,12 +22,19 @@ class BUBoolPred:
       return BUOpPred('or', \
         [BUBoolPred.predToBUPred(arg) for arg in pred.args])
     elif isinstance(pred, BinaryBoolPred):
-      v1 = BUExprTree.createWithExpr(pred.v1)
-      v2 = BUExprTree.createWithExpr(pred.v2)
+      v1 = BUExprTree.createWithExpr(pred.v1, ['p', 1])
+      v2 = BUExprTree.createWithExpr(pred.v2, ['p', 2])
       return BUCompOpPred(BinaryBoolPred.opnames[pred.op], [v1, v2])
     elif isinstance(pred, LLVMBoolPred):
-      return BULLVMPred(pred.op,\
-        [BUExprTree.createWithExpr(arg) for arg in pred.args])
+      children = []
+      chNum = 1
+      for arg in pred.args:
+        children.append(BUExprTree.createWithExpr(arg, ['p', chNum]))
+        chNum += 1
+      return BULLVMPred(pred.op, children)
+
+      # return BULLVMPred(pred.op,\
+      #   [BUExprTree.createWithExpr(arg, ['p']) for arg in pred.args])
     else:
       assert(False)
 

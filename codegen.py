@@ -88,6 +88,9 @@ class CExpression(CFragment):
 class CLabel(CExpression):
   def __init__(self, label):
     self.label = label
+
+  def format(self):
+    return self.formatExpr(18) + ':'
   
   def formatExpr(self, prec=0):
     return text(self.label)
@@ -208,6 +211,16 @@ class CAssign(CExpression):
 class CStatement(CFragment):
   def pprint(self, width=80):
     self.format().pprint(width)
+
+class CMultiStatement(CStatement):
+  def __init__(self, statements):
+    assert(isinstance(statements, list))
+    assert(len(statements) > 0)
+    self.statements = statements
+
+  def format(self):
+    f = nest(2, iter_seq(line + s.format() for s in self.statements))
+    return f
 
 class CSwitchCase(CStatement):
   def __init__(self, value, cases, default=[]):

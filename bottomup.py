@@ -6,6 +6,7 @@ from codegen import *
 from gen import llvm_opcode
 from language import Icmp
 from bottomupprec import *
+from topologicalorder import *
 import pickle
 
 from pdb import set_trace
@@ -14,14 +15,18 @@ DO_STATS = True
 SIMPLIFY = True
 LIMITER = False
 
+PICKLED = True
+#PICKLEOBJ = "MatchSets.obj"
+PICKLEOBJ = "suiteopt.obj"
+
 class BUpeepholeopt(peepholeoptimization):
   def __init__(self, rule, name, pre, source, target, target_skip):
     super(BUpeepholeopt, self).__init__(rule, name, pre, source, target, target_skip)
     self.src_root = get_root(source)
     self.tgt_root = get_root(target)
     self.pred = BUBoolPred.predToBUPred(pre)
-    self.src_tree = BUExprTree.createWithExpr(self.src_root)
-    self.tgt_tree = BUExprTree.createWithExpr(self.tgt_root)
+    self.src_tree = BUExprTree.createWithExpr(self.src_root, ['s'])
+    self.tgt_tree = BUExprTree.createWithExpr(self.tgt_root, ['t'])
     self.src_tree.setRelatedRule(rule)
 
 # Minimizes tables by taking an intermediate step in terms of table
@@ -503,27 +508,36 @@ class TableBuilder(object):
     fileobj.close()
 
   def generate(self, pickled = False):
-    tbos = 'TableBuilderObject.obj'
+    #tbos = 'TableBuilderObject.obj'
+    #tbos = 'suiteopt.obj'
     if not pickled:
       self.generateMatchSet()
-      self.save(tbos)
+      self.save(PICKLEOBJ)
     else:
-      self.load(tbos)
+      self.load(PICKLEOBJ)
 
     tables = self.generateTables()
     return tables
 
   @staticmethod
   def generatePatternForest(patterns):
-    PF = set()
-    todo = set(patterns)
+    PF = list()
+    todo = list(patterns)
 
     while todo:
       p = todo.pop()
       if not p.equalsExists(PF):
-        PF.add(p)
+        PF.append(p)
+      else:
+        # there might be a q in PF for which p == q, except p also has code transformation information
+        if p.relatedRuleId != None:
+          for q in PF:
+            # FIXME: Support multiple tree patterns with differing constrains
+            if p == q and q.relatedRuleId == None:
+              PF.remove(q)
+              PF.append(p)
       for i in xrange(1, p.numOfChildren() + 1):
-        todo.add(p.childAt(i))
+        todo.append(p.childAt(i))
     return PF
   
   @staticmethod
@@ -880,7 +894,7 @@ class BUCodeGenHelper(object):
     self.out.write(cifelseCode.format())
     self.out.write(end)
 
-  def emit_runOnInst(self):
+  def emit_runOnInst(self, topoSort):
     start = 'Instruction *InstCombiner::runOnInstruction(Instruction*I, ' +\
       'DenseMap<Value*,unsigned> &sa) {\n'
     mid = ['x = cast<Value>(I);',
@@ -899,18 +913,25 @@ class BUCodeGenHelper(object):
       self.out.write("// {}: {}\n".format(stateId, ms))
       red = TableBuilder.reduceMatchSet(ms)
       # TODO: figure out a way to process multiple unified tree patterns.
-      # For now we process the first one. Since the order is random, the
-      # first tree pattern might not be the best fit.
+      # For now we process the first one.
       for t in red:
         if t.relatedRuleId is not None:
           if t not in exprToMatchsets:
-            exprToMatchsets[t] = list()
-          exprToMatchsets[t].append(stateId)
+            exprToMatchsets[t.relatedRuleId] = list()
+          exprToMatchsets[t.relatedRuleId].append(stateId)
           break
 
+    # Creating phony cases that are never jumped towards using the switch case and only used as fallback options
+    phonyId = len(mapping) + 1
+    for ph in self.phs:
+      if ph.rule not in exprToMatchsets:
+        exprToMatchsets[ph.rule] = [phonyId]
+        phonyId += 1
+
     cur = 1
-    for e,ms in exprToMatchsets.items():
-      transformHelper = TransformationHelper(e, self.phs)
+    for r,ms in exprToMatchsets.items():
+      e = self.phs[r].src_tree
+      transformHelper = TransformationHelper(e, self.phs, topoSort)
       gen = transformHelper.generateTransformation()
       caseVar = []
       for i in ms:
@@ -935,7 +956,7 @@ class BUCodeGenHelper(object):
     self.out.write(switchCaseCode.format())
     self.out.write('\n' + end)
 
-  def emit_code(self):
+  def emit_code(self, topoSort):
     self.emit_constant_code()
     self.normalizeMapping()
     self.emit_statemapping()
@@ -945,7 +966,7 @@ class BUCodeGenHelper(object):
     self.emit_retrieveStateValue_ConstantInt()
     self.emit_retrieveStateValue_InstMap()
     self.emit_retrieveStateValue_ValMap()
-    self.emit_runOnInst()
+    self.emit_runOnInst(topoSort)
 
 class EquivalenceGenerator(object):
   def __init__(self, manager, tree):
@@ -956,6 +977,10 @@ class EquivalenceGenerator(object):
   def processSubtree(self, path):
     subtree = self.tree.subtree(path)
     var = createVar(path)
+    # Seems a bit unnecessary to check whether multiple
+    # equivalent constant values are the same
+    if subtree.nodeType() == NodeType.ConstVal:
+      return
 
     assert(len(subtree.name) > 0)
 
@@ -981,8 +1006,9 @@ class TransformationHelper(object):
   convop = ['trunc', 'zext', 'sext', 'ZExtOrTrunc', 'ptrtoint',
             'inttoptr', 'bitcast']
 
-  def __init__(self, tree, phs):
+  def __init__(self, tree, phs, topo):
     self.tree = tree
+    self.topo = topo
     self.phs = phs
     self.cgm = CodeGeneratorManager()
     self.eg = EquivalenceGenerator(self.cgm, tree)
@@ -1037,14 +1063,22 @@ class TransformationHelper(object):
 
     todo = [[]]
 
+    print("Currently processing rule {}: {}".format(rule, self.phs[rule].name))
+
+    # if rule == 3:
+    #   set_trace()
+
     while todo:
-      coordinate = todo.pop(0)
+      #coordinate = todo.pop(0)
+      coordinate = todo.pop()
       tree = self.tree.subtree(coordinate)
       if tree.numOfChildren() > 0:
+        toAdd = []
         for i in range(1, tree.numOfChildren() + 1):
           next_coor = copy.deepcopy(coordinate)
           next_coor.append(i)
-          todo.append(next_coor)
+          toAdd.append(next_coor)
+        todo.extend(reversed(toAdd))
       if coordinate:
         coorVar = CVariable(createVar(coordinate))
         parentVar = CVariable(createVar(coordinate[:-1]))
@@ -1067,16 +1101,40 @@ class TransformationHelper(object):
     tgt_tree = self.phs[rule].tgt_tree
 
     todo = [[]]
+    todoTgtTyRegister = []
 
+
+    # while todo:
+    #   coordinate = todo.pop(0)
+    #   tree = tgt_tree.subtree(coordinate)
+    #   if tree.numOfChildren() > 0:
+    #     for i in range(1, tree.numOfChildren() + 1):
+    #       next_coor = copy.deepcopy(coordinate)
+    #       next_coor.append(i)
+    #       todo.append(next_coor)
+    #   tree.register_types(self.cgm)
     while todo:
       coordinate = todo.pop(0)
       tree = tgt_tree.subtree(coordinate)
-      if tree.numOfChildren() > 0:
+      if (tree.nodeType() == NodeType.ConstVal and tree.coordinate[0] == 's') \
+        or isinstance(tree, BUInput):
+        continue
+      if tree.numOfChildren() > 0 and tree.nodeType() != NodeType.ConstOperation:
+        toAdd = []
         for i in range(1, tree.numOfChildren() + 1):
           next_coor = copy.deepcopy(coordinate)
           next_coor.append(i)
-          todo.append(next_coor)
-      tree.register_types(self.cgm)
+          toAdd.append(next_coor)
+        todo.extend(reversed(toAdd))
+      todoTgtTyRegister.append(tree)
+    
+    todoTgtTyRegister.reverse()
+
+    # if rule == 3:
+    #   set_trace()
+
+    for t in todoTgtTyRegister:
+      t.register_types(self.cgm) 
 
     self.cgm.unify(self.tree, tgt_tree)
     tgt_name = '_' + re.sub('[^a-zA-Z0-9_]', '', tgt_tree.name)
@@ -1113,9 +1171,9 @@ class TransformationHelper(object):
           next_coor.append(i)
           todo.append(next_coor)
       nt = tree.nodeType()
-      if tree != tgt_tree and nt == NodeType.Operation and tree not in skip:
+      if tree != tgt_tree and tree not in skip and (nt == NodeType.Operation or isinstance(tree, BUCopyOperand)):
         skip.add(tree)
-        transformCode.append(tree.targetVisit(coordinate, self.cgm, True))
+        transformCode.append(tree.targetVisit(coordinate, self.cgm, True)) 
 
     transformCode.reverse()
     for t in transformCode:
@@ -1137,14 +1195,24 @@ class TransformationHelper(object):
     # Force equivalence code to occur prior to the other clauses
     clauses = self.eg.equivalenceCode() + clauses
 
+    initialize.append(CLabel('transformation_' + str(rule)))
+
+    const_casts = list()
     for c,p in self.cgm.const_path.items():
       pathVar = CVariable(createVar(p))
       constVar = CVariable(c)
-      cast = CFunctionCall('cast<ConstantInt>', pathVar)
-      initialize.append(CAssign(constVar, cast))
+      cast = CFunctionCall('dyn_cast<ConstantInt>', pathVar)
+      const_casts.append(CAssign(constVar, cast))
+
+    clauses = const_casts + clauses
 
     if clauses:
-      cif = CIf(CBinExpr.reduce('&&', clauses), body, [CReturn(CVariable('nullptr'))])
+      if self.topo.hasChild(rule):
+        childRule = self.topo.next(rule)
+        childStr = 'transformation_' + str(childRule)
+        cif = CIf(CBinExpr.reduce('&&', clauses), body, [CGoto(CLabel(childStr))])
+      else:
+        cif = CIf(CBinExpr.reduce('&&', clauses), body, [CReturn(CVariable('nullptr'))])
       return initialize + [cif]
     else:
       return initialize + body
@@ -1166,7 +1234,8 @@ class CodeGeneratorManager(object):
     self.names = set()    # all created names
     self.name_type = {}   # name -> ctype
     self.bound_vl = set() # value -> path
-    self.reps = {}        # value -> value
+    self.reps = {}        # coordinate tuple -> value
+    self.coor_values = {} # coordinate tuple -> value
     self.required = {}    # value -> type
     self.guaranteed = {}  # value -> type
     self.named_types = defaultdict(set)
@@ -1215,16 +1284,57 @@ class CodeGeneratorManager(object):
 
     assert(False)
 
+  def dumpReps(self):
+    for c in self.reps:
+      print("{}: {}".format(self.coor_values[c], self.reps[c]))
+
+  def dumpReq(self):
+    for v,t in self.required.items():
+      print("{} : {}".format(v, t.__class__))
+
   # Retrieves the tree whose type is unified with the input tree's.
   def get_rep(self, tree):
-    if tree not in self.reps:
-      self.reps[tree] = None
+    # coor = tree.coordinate
+    # # if we're currently processing a target tree, copy the
+    # # reps information
+    # if coor not in self.reps and coor[0] == 't' and \
+    #     tree.nodeType() != NodeType.ConstVal:
+    #   for c,t in self.coor_values.items():
+    #     if t == tree:
+    #       print("NEW DUPLICATE REPS FOR {} \t -> \t {} ".format(coor, c))
+    #       self.coor_values[coor] = tree
+    #       self.reps[coor] = self.reps[c]
+    #       break
+
+    # if coor not in self.reps:
+    #   self.reps[coor] = None
+    #   self.coor_values[coor] = tree
+    #   return tree
+    # rep = self.reps[coor]
+    # if not isinstance(rep, BUExprTree) and rep == None:
+    #   return tree
+    # rep = self.get_rep(self.reps[coor])
+    # self.reps[coor] = rep
+    # self.coor_values[coor] = tree
+    # return rep
+
+    if tree.nodeType() == NodeType.ConstVal or \
+       tree.nodeType() == NodeType.ConstOperation:
+      keyVal = tree.coordinate
+      self.coor_values[keyVal] = tree
+    else:
+      keyVal = tree
+
+    if keyVal not in self.reps:
+      self.reps[keyVal] = None
       return tree
-    rep = self.reps[tree]
+
+    rep = self.reps[keyVal]
     if not isinstance(rep, BUExprTree) and rep == None:
       return tree
-    rep = self.get_rep(self.reps[tree])
-    self.reps[tree] = rep
+
+    rep = self.get_rep(self.reps[keyVal])
+    self.reps[keyVal] = rep
     return rep
 
   def get_llvm_type(self, tree):
@@ -1257,15 +1367,24 @@ class CodeGeneratorManager(object):
   def get_ctype(self, name):
     return self.name_type[name]
 
+  # make a distinction between the constants
   def bound(self, var):
     assert isinstance(var, BUExprTree)
-    return var in self.bound_vl
+    if var.nodeType() == NodeType.ConstVal or \
+       var.nodeType() == NodeType.ConstOperation:
+      return var.coordinate in self.bound_vl
+    else:
+      return var in self.bound_vl
 
   def bind_tree(self, tree):
     assert tree not in self.bound_vl
     assert isinstance(tree, BUExprTree)
 
-    self.bound_vl.add(tree)
+    if tree.nodeType() == NodeType.ConstVal or \
+       tree.nodeType() == NodeType.ConstOperation:
+      self.bound_vl.add(tree.coordinate)
+    else:
+      self.bound_vl.add(tree)
 
   def add_path_var(self, tree, path):
     assert isinstance(tree, BUExprTree)
@@ -1324,7 +1443,12 @@ class CodeGeneratorManager(object):
       if self.bound(r2) and not self.bound(r1):
         r1, r2 = r2, r1
 
-      self.reps[r2] = r1
+      if r2.nodeType() == NodeType.ConstVal or \
+         r2.nodeType() == NodeType.ConstOperation:
+        self.reps[r2.coordinate] = r1
+        self.coor_values[r2.coordinate] = r2
+      else:
+        self.reps[r2] = r1
 
       if r2 in self.required:
         self.required[r1] = self.get_most_specific_BUtype\
@@ -1338,11 +1462,11 @@ class CodeGeneratorManager(object):
 
 def buildTables(phs):
   tb = TableBuilder(phs)
-  return tb.generate(False)
+  return tb.generate(PICKLED)
 
-def emitCode(tables, phs, out):
+def emitCode(tables, phs, out, topoSort):
   buch = BUCodeGenHelper(tables, phs, out)
-  buch.emit_code()
+  buch.emit_code(topoSort)
 
 def generate_tables(opts, out):
   root_opts = defaultdict(list)
@@ -1373,6 +1497,21 @@ def generate_tables(opts, out):
     name, pre, src_bb, tgt_bb, src, tgt, src_used, tgt_used, tgt_skip = opt
     phs.append(BUpeepholeopt(rule, name, pre, src, tgt, tgt_skip))
 
+  topo = TreeTopoGraph()
+
+  for ph1 in phs:
+    for ph2 in phs:
+      if ph1.src_tree == ph2.src_tree or ph1.src_tree.isNotComparable(ph2.src_tree):
+        continue
+      elif ph1.src_tree.subsumes(ph2.src_tree):
+        topo.addEdge(ph2.rule, ph1.rule)
+      elif ph2.src_tree.subsumes(ph1.src_tree):
+        topo.addEdge(ph1.rule, ph2.rule)
+
+  topo.show('nonreduced')
+  topo.reduction()
+  topo.show('reduced')
+
   tables = buildTables(phs)
 
   for i,ms in tables.mapping.items():
@@ -1387,5 +1526,5 @@ def generate_tables(opts, out):
     print(t)
     print("dimension of {}: {}".format(f, tables.dimension(f)))
   
-  emitCode(tables, phs, out)
+  emitCode(tables, phs, out, topo)
 
