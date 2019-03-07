@@ -15,16 +15,16 @@ DO_STATS = True
 SIMPLIFY = True
 LIMITER = False
 
-PICKLED = True
-#PICKLEOBJ = "MatchSets.obj"
-PICKLEOBJ = "suiteopt.obj"
+PICKLED = False
+PICKLEOBJ = "MatchSets.obj"
+#PICKLEOBJ = "suiteopt.obj"
 
 class BUpeepholeopt(peepholeoptimization):
   def __init__(self, rule, name, pre, source, target, target_skip):
     super(BUpeepholeopt, self).__init__(rule, name, pre, source, target, target_skip)
     self.src_root = get_root(source)
     self.tgt_root = get_root(target)
-    self.pred = BUBoolPred.predToBUPred(pre)
+    self.pred = BUBoolPred.predToBUPred(pre, ['p'])
     self.src_tree = BUExprTree.createWithExpr(self.src_root, ['s'])
     self.tgt_tree = BUExprTree.createWithExpr(self.tgt_root, ['t'])
     self.src_tree.setRelatedRule(rule)
@@ -1130,8 +1130,6 @@ class TransformationHelper(object):
     
     todoTgtTyRegister.reverse()
 
-    # if rule == 3:
-    #   set_trace()
 
     for t in todoTgtTyRegister:
       t.register_types(self.cgm) 
@@ -1142,11 +1140,15 @@ class TransformationHelper(object):
     clauses.extend(self.cgm.clauses)
 
     for v,t in self.cgm.guaranteed.iteritems():
-      if not self.cgm.bound(v) or v.nodeType() == NodeType.ConstVal:
+      if isinstance(v, tuple):
+        rv = self.cgm.coor_values[v]
+      else:
+        rv = v
+      if not self.cgm.bound(rv) or rv.nodeType() == NodeType.ConstVal:
         continue
       clauses.extend(self.minimal_type_constraints(\
-        self.cgm.get_llvm_type(v), \
-        self.cgm.required[v], \
+        self.cgm.get_llvm_type(rv), \
+        self.cgm.getReq(rv), \
         t))
 
     if not isinstance(pred, BUTruePred):
@@ -1286,11 +1288,17 @@ class CodeGeneratorManager(object):
 
   def dumpReps(self):
     for c in self.reps:
-      print("{}: {}".format(self.coor_values[c], self.reps[c]))
+      if isinstance(c, tuple):
+        print("{}: {}".format(self.coor_values[c], self.reps[c]))
+      else:
+        print("{}: {}".format(c, self.reps[c]))
 
   def dumpReq(self):
     for v,t in self.required.items():
-      print("{} : {}".format(v, t.__class__))
+      if isinstance(v, tuple):
+        print("{} : {}({})".format(self.coor_values[v], t.__class__, t))
+      else:
+        print("{} : {}({})".format(v, t.__class__, t))
 
   # Retrieves the tree whose type is unified with the input tree's.
   def get_rep(self, tree):
@@ -1406,6 +1414,64 @@ class CodeGeneratorManager(object):
     self.names.add(name)
     self.name_type[name] = ctype
 
+  def appendReq(self, tree, ty):
+    if tree.nodeType() == NodeType.ConstVal or \
+       tree.nodeType() == NodeType.ConstOperation:
+      self.required[tree.coordinate] = ty
+      self.coor_values[tree.coordinate] = tree
+    else:
+      self.required[tree] = ty
+
+  def getReq(self, tree):
+    if tree.nodeType() == NodeType.ConstVal or \
+       tree.nodeType() == NodeType.ConstOperation:
+      return self.required[tree.coordinate]
+    else:
+      return self.required[tree]
+
+  def isInReq(self, tree):
+    if tree.nodeType() == NodeType.ConstVal or \
+       tree.nodeType() == NodeType.ConstOperation:
+      return tree.coordinate in self.required
+    else:
+      return tree in self.required
+
+  def remReq(self, tree):
+    if tree.nodeType() == NodeType.ConstVal or \
+       tree.nodeType() == NodeType.ConstOperation:
+      del self.required[tree.coordinate]
+    else:
+      del self.required[tree]
+
+  def appendGuar(self, tree, ty):
+    if tree.nodeType() == NodeType.ConstVal or \
+       tree.nodeType() == NodeType.ConstOperation:
+      self.guaranteed[tree.coordinate] = ty
+      self.coor_values[tree.coordinate] = tree
+    else:
+      self.guaranteed[tree] = ty
+
+  def getGuar(self, tree):
+    if tree.nodeType() == NodeType.ConstVal or \
+       tree.nodeType() == NodeType.ConstOperation:
+      return self.guaranteed[tree.coordinate]
+    else:
+      return self.guaranteed[tree]
+
+  def isInGuar(self, tree):
+    if tree.nodeType() == NodeType.ConstVal or \
+       tree.nodeType() == NodeType.ConstOperation:
+      return tree.coordinate in self.guaranteed
+    else:
+      return tree in self.guaranteed
+
+  def remGuar(self, tree):
+    if tree.nodeType() == NodeType.ConstVal or \
+       tree.nodeType() == NodeType.ConstOperation:
+      del self.guaranteed[tree.coordinate]
+    else:
+      del self.guaranteed[tree]
+
   def register_type(self, tree, actual, minimal):
     rep = self.get_rep(tree)
     if isinstance(actual, BUNameType):
@@ -1415,16 +1481,22 @@ class CodeGeneratorManager(object):
       minimal = minimal.type
 
     actual = self.get_most_specific_BUtype(actual, minimal)
-    if rep in self.required:
-      self.required[rep] = self.get_most_specific_BUtype(actual, self.required[rep])
+    #if rep in self.required:
+    if self.isInReq(rep):
+      #self.required[rep] = self.get_most_specific_BUtype(actual, self.required[rep])
+      self.appendReq(rep, self.get_most_specific_BUtype(actual, self.getReq(rep)))
     else:
-      self.required[rep] = actual
+      #self.required[rep] = actual
+      self.appendReq(rep, actual)
 
     if self.phase == self.Initialization:
-      if rep in self.guaranteed:
-        self.guaranteed[rep] = self.get_most_specific_BUtype(minimal, self.guaranteed[rep])
+      #if rep in self.guaranteed:
+      if self.isInGuar(rep):
+        #self.guaranteed[rep] = self.get_most_specific_BUtype(minimal, self.getGuar(rep))
+        self.appendGuar(rep, self.get_most_specific_BUtype(minimal, self.getGuar(rep)))
       else:
-        self.guaranteed[rep] = minimal
+        #self.guaranteed[rep] = minimal
+        self.appendGuar(rep, minimal)
 
   def unify(self, *trees):
     it = iter(trees)
@@ -1433,7 +1505,9 @@ class CodeGeneratorManager(object):
 
     for v2 in it:
       r2 = self.get_rep(v2)
-      if r1 == r2:
+      #if r1 is r2:
+      if (r1.nodeType() == NodeType.ConstVal and r1.coordinate == r2.coordinate) or \
+          repr(r1) == repr(r2):
         continue
 
       if self.phase == self.Target and self.bound(r1) and self.bound(r2):
@@ -1450,15 +1524,23 @@ class CodeGeneratorManager(object):
       else:
         self.reps[r2] = r1
 
-      if r2 in self.required:
-        self.required[r1] = self.get_most_specific_BUtype\
-          (self.required[r1], self.required[r2])
-        del self.required[r2]
+      #if r2 in self.required:
+      if self.isInReq(r2):
+        # self.required[r1] = self.get_most_specific_BUtype\
+        #   (self.required[r1], self.required[r2])
+        # del self.required[r2]
+        self.appendReq(r1, self.get_most_specific_BUtype\
+          (self.getReq(r1), self.getReq(r2)))
+        self.remReq(r2)
 
-      if r2 in self.guaranteed:
-        self.guaranteed[r1] = self.get_most_specific_BUtype\
-          (self.guaranteed[r1], self.guaranteed[r2])
-        del self.guaranteed[r2]
+      #if r2 in self.guaranteed:
+      if self.isInGuar(r2):
+        # self.guaranteed[r1] = self.get_most_specific_BUtype\
+        #   (self.guaranteed[r1], self.guaranteed[r2])
+        # del self.guaranteed[r2]
+        self.appendGuar(r1, self.get_most_specific_BUtype\
+          (self.getGuar(r1), self.getGuar(r2)))
+        self.remGuar(r2)
 
 def buildTables(phs):
   tb = TableBuilder(phs)

@@ -9,27 +9,37 @@ class BUBoolPred:
     self.children = []
 
   @staticmethod
-  def predToBUPred(pred):
+  def predToBUPred(pred, coordinate):
+    children = []
     if isinstance(pred, TruePred):
       return BUTruePred()
     elif isinstance(pred, PredNot):
-      v = BUBoolPred.predToBUPred(pred.v)
+      v = BUBoolPred.predToBUPred(pred.v, coordinate + [1])
       return BUOpPred('not', [v])
     elif isinstance(pred, PredAnd):
-      return BUOpPred('and', \
-        [BUBoolPred.predToBUPred(arg) for arg in pred.args])
-    elif isinstance(pred, PredOr):
-      return BUOpPred('or', \
-        [BUBoolPred.predToBUPred(arg) for arg in pred.args])
-    elif isinstance(pred, BinaryBoolPred):
-      v1 = BUExprTree.createWithExpr(pred.v1, ['p', 1])
-      v2 = BUExprTree.createWithExpr(pred.v2, ['p', 2])
-      return BUCompOpPred(BinaryBoolPred.opnames[pred.op], [v1, v2])
-    elif isinstance(pred, LLVMBoolPred):
-      children = []
       chNum = 1
       for arg in pred.args:
-        children.append(BUExprTree.createWithExpr(arg, ['p', chNum]))
+        children.append(BUBoolPred.predToBUPred(arg, coordinate + [chNum]))
+        chNum += 1
+      # return BUOpPred('and', \
+      #   [BUBoolPred.predToBUPred(arg) for arg in pred.args])
+      return BUOpPred('and', children)
+    elif isinstance(pred, PredOr):
+      chNum = 1
+      for arg in pred.args:
+        children.append(BUBoolPred.predToBUPred(arg, coordinate + [chNum]))
+        chNum += 1
+      # return BUOpPred('or', \
+      #   [BUBoolPred.predToBUPred(arg) for arg in pred.args])
+      return BUOpPred('Or', children)
+    elif isinstance(pred, BinaryBoolPred):
+      v1 = BUExprTree.createWithExpr(pred.v1, coordinate + [1])
+      v2 = BUExprTree.createWithExpr(pred.v2, coordinate + [2])
+      return BUCompOpPred(BinaryBoolPred.opnames[pred.op], [v1, v2])
+    elif isinstance(pred, LLVMBoolPred):
+      chNum = 1
+      for arg in pred.args:
+        children.append(BUExprTree.createWithExpr(arg, coordinate + [chNum]))
         chNum += 1
       return BULLVMPred(pred.op, children)
 
@@ -71,8 +81,11 @@ class BUOpPred(BUBoolPred):
       ch.register_types(cgm)
 
   def visitPrecondition(self, cgm):
-    return CBinExpr.reduce(self._pred[self.op], (ch.visitPrecondition(cgm) \
-      for ch in self.children))
+    if self.op in ['and', 'or']:
+      return CBinExpr.reduce(self._pred[self.op], (ch.visitPrecondition(cgm) \
+        for ch in self.children))
+    else:
+      return CUnaryExpr('!', self.children[0].visitPrecondition(cgm))
 
 class BUCompOpPred(BUBoolPred):
   opnames = ['==', '!=', '<', '<=', '>', '>=', 'u<', 'u<=', 'u>', 'u>=']
