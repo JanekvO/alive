@@ -173,6 +173,9 @@ class BUExprTree(ExpressionTree):
     else:
       assert(False), 'tree should have a nodeType'
 
+  def isBool(self):
+    return False
+
   def get_APInt_or_u64(self, cgm):
     assert(False)
 
@@ -329,6 +332,9 @@ class BUConstantVal(BUExprTree):
 
   def get_APInt_or_u64(self, cgm):
     return CVariable(str(self.val))
+
+  def isBool(self):
+    return self.getSymbol() in ['true', 'false']
 
 class BUUndefVal(BUExprTree):
   def register_types(self, cgm):

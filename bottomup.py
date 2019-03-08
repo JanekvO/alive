@@ -814,16 +814,16 @@ class BUCodeGenHelper(object):
   def emit_retrieveStateValue_ConstantInt(self):
     start = '\nstatic unsigned retrieveStateValue(ConstantInt *C) {\n  int constantValue;\n'
     end = '\n}\n'
-    cGetVal = CVariable('C').arr('getValue','').dot('getSExtValue','')
-    switchCase = SwitchCaseHelp(cGetVal)
-    ######
-    # cArg = CVariable('C')
-    # cGetVal = CVariable('constantValue')
+    # cGetVal = CVariable('C').arr('getValue','').dot('getSExtValue','')
     # switchCase = SwitchCaseHelp(cGetVal)
-    # bitWidthExpr = CBinExpr('==', cArg.arr('getBitWidth', ''), CVariable('1'))
-    # ifStatement = CIf(bitWidthExpr, \
-    #     [CAssign(cGetVal, cArg.arr('getZExtValue', ''))], \
-    #     [CAssign(cGetVal, cArg.arr('getSExtValue', ''))])
+    ######
+    cArg = CVariable('C')
+    cGetVal = CVariable('constantValue')
+    switchCase = SwitchCaseHelp(cGetVal)
+    bitWidthExpr = CBinExpr('==', cArg.arr('getBitWidth', ''), CVariable('1'))
+    ifStatement = CIf(bitWidthExpr, \
+        [CAssign(cGetVal, cArg.arr('getZExtValue', ''))], \
+        [CAssign(cGetVal, cArg.arr('getSExtValue', ''))])
 
     for idState,ms in self.tables.mapping.items():
       caseCode = CReturn(CVariable(str(idState)))
@@ -836,8 +836,8 @@ class BUCodeGenHelper(object):
           caseValue = CVariable(str(reducedms[0].val))
           switchCase.addCase([caseValue], [caseCode])
 
-    switchCaseCode = nest(2, switchCase.generate().format())
-    #switchCaseCode = nest(2, seq(line + ifStatement.format(), switchCase.generate().format()))
+    #switchCaseCode = nest(2, switchCase.generate().format())
+    switchCaseCode = nest(2, seq(line + ifStatement.format(), switchCase.generate().format()))
 
     self.out.write(start)
     self.out.write(switchCaseCode.format())
@@ -1088,6 +1088,12 @@ class TransformationHelper(object):
           next_coor.append(i)
           toAdd.append(next_coor)
         todo.extend(reversed(toAdd))
+      elif tree.nodeType() == NodeType.ConstVal and \
+          tree.val in [0, 1] and \
+          not tree.isBool():
+        cnstVal = CVariable(createVar(coordinate))
+        cast = CFunctionCall('cast<ConstantInt>', cnstVal)
+        clauses.append(CBinExpr('>', cast.arr('getBitWidth', ''), CVariable('1')))
       if coordinate:
         coorVar = CVariable(createVar(coordinate))
         parentVar = CVariable(createVar(coordinate[:-1]))
