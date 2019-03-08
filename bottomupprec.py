@@ -31,7 +31,7 @@ class BUBoolPred:
         chNum += 1
       # return BUOpPred('or', \
       #   [BUBoolPred.predToBUPred(arg) for arg in pred.args])
-      return BUOpPred('Or', children)
+      return BUOpPred('or', children)
     elif isinstance(pred, BinaryBoolPred):
       v1 = BUExprTree.createWithExpr(pred.v1, coordinate + [1])
       v2 = BUExprTree.createWithExpr(pred.v2, coordinate + [2])

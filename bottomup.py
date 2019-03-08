@@ -15,9 +15,9 @@ DO_STATS = True
 SIMPLIFY = True
 LIMITER = False
 
-PICKLED = False
-PICKLEOBJ = "MatchSets.obj"
-#PICKLEOBJ = "suiteopt.obj"
+PICKLED = True
+#PICKLEOBJ = "MatchSets.obj"
+PICKLEOBJ = "suiteopt.obj"
 
 class BUpeepholeopt(peepholeoptimization):
   def __init__(self, rule, name, pre, source, target, target_skip):
@@ -812,10 +812,18 @@ class BUCodeGenHelper(object):
     self.out.write(mappingEnd)
   
   def emit_retrieveStateValue_ConstantInt(self):
-    start = '\nstatic unsigned retrieveStateValue(ConstantInt *C) {\n'
+    start = '\nstatic unsigned retrieveStateValue(ConstantInt *C) {\n  int constantValue;\n'
     end = '\n}\n'
     cGetVal = CVariable('C').arr('getValue','').dot('getSExtValue','')
     switchCase = SwitchCaseHelp(cGetVal)
+    ######
+    # cArg = CVariable('C')
+    # cGetVal = CVariable('constantValue')
+    # switchCase = SwitchCaseHelp(cGetVal)
+    # bitWidthExpr = CBinExpr('==', cArg.arr('getBitWidth', ''), CVariable('1'))
+    # ifStatement = CIf(bitWidthExpr, \
+    #     [CAssign(cGetVal, cArg.arr('getZExtValue', ''))], \
+    #     [CAssign(cGetVal, cArg.arr('getSExtValue', ''))])
 
     for idState,ms in self.tables.mapping.items():
       caseCode = CReturn(CVariable(str(idState)))
@@ -829,6 +837,7 @@ class BUCodeGenHelper(object):
           switchCase.addCase([caseValue], [caseCode])
 
     switchCaseCode = nest(2, switchCase.generate().format())
+    #switchCaseCode = nest(2, seq(line + ifStatement.format(), switchCase.generate().format()))
 
     self.out.write(start)
     self.out.write(switchCaseCode.format())
@@ -910,13 +919,13 @@ class BUCodeGenHelper(object):
     usedVars = {}
 
     for stateId,ms in mapping.items():
-      self.out.write("// {}: {}\n".format(stateId, ms))
       red = TableBuilder.reduceMatchSet(ms)
+      self.out.write("// {}: {}\n".format(stateId, red))
       # TODO: figure out a way to process multiple unified tree patterns.
       # For now we process the first one.
       for t in red:
-        if t.relatedRuleId is not None:
-          if t not in exprToMatchsets:
+        if t.relatedRuleId != None:
+          if t.relatedRuleId not in exprToMatchsets:
             exprToMatchsets[t.relatedRuleId] = list()
           exprToMatchsets[t.relatedRuleId].append(stateId)
           break
