@@ -2001,6 +2001,7 @@ Name: AndOrXor:2581  (B|A)^B -> A & ~B
 
 
 Name: AndOrXor:2587  (B&A)^A -> ~B & A
+Pre: width(%op1) > 1
 %op0 = and %a, %op1
 %r = xor %op0, %op1
   =>
@@ -3290,22 +3291,26 @@ Name: Select:859
 %r = or %nota, %b
 
 Name: Select:869
+Pre: width(%r) > 1
 %r = select C, 1, 0
   =>
 %r = zext C
 
 Name: Select:873
+Pre: width(%r) > 1
 %r = select C, -1, 0
   =>
 %r = sext C
 
 Name: Select:877
+Pre: width(%r) > 1
 %r = select %c, 0, 1
   =>
 %notc = xor %c, -1
 %r = zext %notc
 
 Name: Select:883
+Pre: width(%r) > 1
 %r = select %c, 0, -1
   =>
 %notc = xor %c, -1

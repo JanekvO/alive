@@ -15,33 +15,34 @@ class NodeType(Enum):
 class PatternHelper(object):
   @staticmethod
   def patternsWithTypesAt(path, P, types):
-    F = set()
+    F = list()
     for ph in P:
       p = ph.src_tree
       f = p.subtree(path)
       if f is not None:
-        if f.nodeType() in types:
-          F.add(ph)
+        if f.nodeType() in types and ph not in F:
+          F.append(ph)
     return F
 
   @staticmethod
   def symbolsAt(path, P):
     F = PatternHelper.patternsWithTypesAt(path, P, \
       [NodeType.Operation, NodeType.ConstVal])
-    R = set()
+    R = list()
     for f in F:
       subtree = f.src_tree.subtree(path)
-      R.add(subtree.getSymbol())
+      if subtree.getSymbol() not in R:
+        R.append(subtree.getSymbol())
     return R
 
   @staticmethod
   def patternsWithSymbAt(P, path, symb):
-    F = set()
+    F = list()
     for ph in P:
       p = ph.src_tree
       f = p.subtree(path)
-      if f is not None and f.getSymbol() == symb:
-        F.add(ph)
+      if f is not None and f.getSymbol() == symb and ph not in F:
+        F.append(ph)
     return F
 
   @staticmethod

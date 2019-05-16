@@ -370,14 +370,14 @@ class AutomataBuilder(object):
 
   def closestDivergingSink(self, s):
     dfa = self.automaton.graph
-    parents = set([s])
+    parents = [s]
     markedStates = set([])
     while len(parents) is not 0:
       curState = parents.pop()
       for src,edg in dfa.items():
         for sym,dst in edg.items():
           if curState is dst[0] and curState not in markedStates:
-            parents.add(src)
+            parents.append(src)
             markedStates.add(curState)
             if Notequal in dfa[src] and curState not in dfa[src][Notequal]:
               return dfa[src][Notequal][0]
@@ -389,7 +389,8 @@ class AutomataBuilder(object):
   def createAutomaton(self, s, e, P):
     assert(len(P) is not 0), "Can't generate automaton using 0 patterns"
     #print("s:{}\te:{}\tP:{}".format(s, e.symbol, len(P)))
-    M = set(p for p in P if p.src_tree.subsumes(e))
+    # M = set(p for p in P if p.src_tree.subsumes(e))
+    M = [p for p in P if p.src_tree.subsumes(e)]
     if len(M) is not 0 and self.acceptancCondition(P, M):
       self.automaton.finalizeState(s)
       m = M.pop()
@@ -400,7 +401,6 @@ class AutomataBuilder(object):
       sink = self.closestDivergingSink(s)
       if sink is not None:
         self.automaton.addTransition(Notequal, s, sink)
-      # TODO: fix priority
       self.stateAuxData[s] = StateAuxiliary(copy.deepcopy(e), [m], accepting=True, sink=sink)
     else:
       path = self.chooser.makeChoice(e, P)
@@ -788,7 +788,8 @@ def generate_automaton(opts, out):
   topo.show('reduced')
 
   priority = topo.topologicalSort()
-  PriorityLookup = {p:(len(phs) - i) for i,p in enumerate(priority)}
+  #PriorityLookup = {p:(len(phs) - i) for i,p in enumerate(priority)}
+  PriorityLookup = {p:(len(phs) - i) for i,p in enumerate(phs)}
 
   prefixDc = PrefixTree(None, 0)
   
@@ -809,6 +810,7 @@ def generate_automaton(opts, out):
   marked = set()
   stateFunctions = []
   usedVariables = {}
+  maxVal = 0
   # There should be a better way than iterating and having this whole blob of code
   while len(q) is not 0:
     current = q.popleft()
@@ -949,6 +951,13 @@ def generate_automaton(opts, out):
 
     functionString = 'state_{}'.format(current)
     stateFunctions.append((functionString, stateFunctionBody))
+
+
+  maxVal = 0
+  for s,e in autom.graph.items():
+    maxVal += len(e)
+    
+  print("Number of edges: {}".format(maxVal))
 
   out.write('Instruction *InstCombiner::runOnInstruction(Instruction *I) {\n')
   varDecl_it = CDefinition.block((t, CVariable(n)) for n,t in usedVariables.iteritems())
